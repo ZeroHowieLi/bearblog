@@ -111,20 +111,20 @@ def upload_image(request):
             if extention.lower().endswith(('png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'svg', 'webp')):
 
                 filepath = f'{blog.subdomain}-{time_string}-{count}.{extention}'
-                url = f'https://bear-images.sfo2.cdn.digitaloceanspaces.com/{filepath}'
+                url = f'https://image.howieli.tech/{filepath}'
                 count = count + 1
                 file_links.append(url)
 
                 session = boto3.session.Session()
                 client = session.client(
                     's3',
-                    endpoint_url='https://sfo2.digitaloceanspaces.com',
-                    region_name='sfo2',
-                    aws_access_key_id='KKKRU7JXRF6ZOLEGJPPX',
+                    endpoint_url='https://oss-cn-beijing-internal.aliyuncs.com',
+                    region_name='oss-cn-beijing',
+                    aws_access_key_id='LTAI5tBbDWtEcBLn3CdG3K32',
                     aws_secret_access_key=os.getenv('SPACES_SECRET'))
 
                 response = client.put_object(
-                    Bucket='bear-images',
+                    Bucket='howieli-blog',
                     Key=filepath,
                     Body=file,
                     ContentType=file.content_type,
