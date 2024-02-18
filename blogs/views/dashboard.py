@@ -15,6 +15,7 @@ import os
 import boto3
 import time
 import djqscsv
+from botocore.config import Config
 
 from blogs.forms import NavForm, StyleForm
 from blogs.helpers import get_country, sanitise_int
@@ -121,7 +122,8 @@ def upload_image(request):
                     endpoint_url='https://oss-cn-beijing-internal.aliyuncs.com',
                     region_name='oss-cn-beijing',
                     aws_access_key_id='LTAI5tBbDWtEcBLn3CdG3K32',
-                    aws_secret_access_key=os.getenv('SPACES_SECRET'))
+                    aws_secret_access_key=os.getenv('SPACES_SECRET'),
+                    config=Config(s3={"addressing_style": "virtual", "signature_version": 's3v4'}))
 
                 response = client.put_object(
                     Bucket='howieli-blog',
