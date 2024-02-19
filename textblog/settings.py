@@ -184,7 +184,8 @@ USE_TZ = True
 # Static files
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATIC_URL = "static/"
-GEOIP_PATH = "geoip/"
+# GEOIP_PATH = "geoip/"
+GEOIP_PATH = os.path.join(BASE_DIR, 'geoip')
 
 # Enable WhiteNoise's GZip compression of static assets.
 STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
