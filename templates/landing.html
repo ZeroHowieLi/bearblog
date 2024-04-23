@@ -15,15 +15,12 @@
     <a href="/dashboard/">Dashboard</a>
     {% else %}
     <a href="{% url 'signup_flow' %}">Sign up</a>
-    {% comment %} <a href="/accounts/signup/">Sign up</a> {% endcomment %}
     <a href="/accounts/login/">Log in</a>
     {% endif %}
     <a href="/discover/">Discover</a>
 </nav>
 <p>
     This is a blogging platform where words matter most.
-    <br>
-    Your readers are protected while your content is delivered at light speed.
 </p>
 <h4>
     Shun the bloat of the current web, embrace the <i>bear</i> necessities.
@@ -33,14 +30,15 @@
     <li>Tiny (~2.7kb), optimized, and awesome pages</li>
     <li>No trackers, ads, or scripts</li>
     <li>Seconds to sign up</li>
-    <li>Built to last forever</li>
     <li>Connect your custom domain</li>
     <li>Free themes</li>
     <li>RSS &amp; Atom feeds</li>
+    <li>Built to last forever<sup><a href="https://herman.bearblog.dev/building-software-to-last-forever" target="_blank">*</a></sup></li>
 </ul>
 <p><a href="https://howieli.cn" target="_blank">View example blog</a></p>
 <h3>
-   Publish something awesome with your <i>bear</i> hands <span class="bear"></span>
+   Publish something awesome with your <i>bear</i> hands
+   <a class="bear" href="https://herman.bearblog.dev/praise-for-bear/" target="_blank" style="text-decoration: none; color: inherit;"></a>
 </h3>
 
 {% endblock %}

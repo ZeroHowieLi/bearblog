@@ -5,7 +5,7 @@
 {% block custom_styles %}
     {% include 'styles/blog/default.css' %}
     {% include 'styles/dashboard.css' %}
-    {{ blog.dashboard_styles | safe }}
+    {{ request.user.settings.dashboard_styles | safe }}
 {% endblock %}
 
 {% block nav %}{% include '../snippets/dashboard_nav.html' %}{% endblock %}
@@ -21,6 +21,6 @@
 {{ chart|safe  }}
 <h3>Need more in-depth analytics?</h3>
 <p>
-    <a href="/dashboard/upgrade/">Upgrade</a> to get access to in-depth, long-term analytics (<a href="https://herman.bearblog.dev/public-analytics/" target="_blank">example</a>).
+    <a href="{% url 'upgrade' %}">Upgrade</a> to get access to in-depth, long-term analytics (<a href="https://herman.bearblog.dev/public-analytics/" target="_blank">example</a>).
 </p>
 {% endblock %}

@@ -11,7 +11,7 @@ New post | Bear Blog
 {% block custom_styles %}
     {% include 'styles/blog/default.css' %}
     {% include 'styles/dashboard.css' %}
-    {{ blog.dashboard_styles | safe }}
+    {{ request.user.settings.dashboard_styles | safe }}
 {% endblock %}
 
 {% block content %}
@@ -25,16 +25,20 @@ New post | Bear Blog
 {% endif %}
 <form method="POST" class="post-form full-width">
     <p class="sticky-controls">
-        <button onclick="event.preventDefault(); sessionStorage.clear(); window.location = '/dashboard/posts/'">&#8592; Back</button>
+        <button
+            onclick="event.preventDefault(); sessionStorage.clear(); window.location = '{% if post.is_page or is_page %}{% url 'pages_edit' id=blog.subdomain %}{% else %}{% url 'posts_edit' id=blog.subdomain %}{% endif %}'"
+        >
+            &#8592; Back
+        </button>
         <button type="submit" onclick="document.getElementById('publish').value = true;">Publish</button>
         
         {% if post %}
-            <button onclick="event.preventDefault(); window.open('{{ blog.dynamic_useful_domain }}/{{ post.slug }}{% if not post.publish %}?preview=true{% endif %}');">
+            <button onclick="event.preventDefault(); window.open('{{ blog.dynamic_useful_domain }}/{{ post.slug }}{% if not post.publish %}?token={{ post.token }}{% endif %}');">
                 View{% if not post.publish %} draft{% endif %}
             </button>
             <button
                 style="color: red; float: right;"
-                onclick="event.preventDefault();if(confirm('Are you sure?')){window.location = '/dashboard/posts/{{ post.uid }}/delete/';}"
+                onclick="event.preventDefault();if(confirm('Are you sure?')){window.location = '/{{ blog.subdomain }}/dashboard/posts/{{ post.uid }}/delete/';}"
             >
                 Delete
             </button>
@@ -65,7 +69,7 @@ New post | Bear Blog
             tags: {% if blog.tags %}{{ blog.tags|join:", " }}{% else %}bears, writing, thoughts{% endif %}<br>
             make_discoverable: true
         </p>
-        <a href="https://docs.bearblog.dev/home-page" target="_blank">
+        <a href="https://docs.bearblog.dev/post" target="_blank">
             More info
         </a>
     </details>
@@ -91,7 +95,7 @@ New post | Bear Blog
         <b>is_page:</b> {{ post.is_page|lower }}{% endif %}{% if post.class_name %}<br>
         <b>class_name:</b> {{ post.class_name }}{% endif %}{% if not post.make_discoverable %}<br>
         <b>make_discoverable:</b> {{ post.make_discoverable|lower }}<br>{% endif %}{% elif template_header %}
-        <b>{{ template_header|linebreaksbr }}</b>{% else %}<b>title:</b> <br>{% endif %}
+        <b>{{ template_header|linebreaksbr }}</b>{% if is_page %}<b>is_page:</b> true{% endif %}{% else %}<b>title:</b> <br>{% if is_page %}<b>is_page:</b> true{% endif %}{% endif %}
     </div>
 
     <input type="hidden" id="hidden_header_content" name="header_content">
@@ -115,5 +119,5 @@ New post | Bear Blog
 </form>
 
 {% include '../snippets/editor_functions.html' with blog=blog post=post%}
-{{ blog.dashboard_footer | safe }}
+{{ request.user.settings.dashboard_footer | safe }}
 {% endblock %}

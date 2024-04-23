@@ -110,7 +110,7 @@ def markdown(content, blog_or_post=False):
     processed_markup = str(soup)
 
     # If not upgraded remove iframes and js
-    if not blog or not blog.upgraded:
+    if not blog or not blog.user.settings.upgraded:
         processed_markup = clean(processed_markup)
 
     # Replace LaTeX between $$ with MathML
@@ -189,33 +189,50 @@ def apply_filters(posts, tag=None, limit=None, order=None):
             pass
     return posts
 
+
 def element_replacement(markup, blog, post=None):
-    pattern = r'\{\{\s*posts' \
-          r'(?:\s*\|\s*tag:\s*(?P<tag>[^\|]+))?' \
-          r'(?:\s*\|\s*limit:\s*(?P<limit>\d+))?' \
-          r'(?:\s*\|\s*order:\s*(?P<order>asc|desc))?' \
-          r'(?:\s*\|\s*description:\s*(?P<description>True))?' \
-          r'\s*\}\}'
-
-
-    def replace_with_filtered_posts(match):
-        tag = match.group('tag')
-        limit = match.group('limit')
-        order = match.group('order')
-        description = match.group('description') == 'True'
-        filtered_posts = apply_filters(blog.post_set.filter(publish=True, is_page=False), tag, limit, order)
-        context = {'blog': blog, 'posts': filtered_posts, 'embed': True, 'show_description': description}
-        return render_to_string('snippets/post_list.html', context)
+    # Match the entire {{ posts ... }} directive, including parameters
+    pattern = r'\{\{\s*posts([^}]*)\}\}'
     
+    def replace_with_filtered_posts(match):
+        params_str = match.group(1) 
+        tag, limit, order, description, content = None, None, None, False, False
+        
+        # Extract and process parameters one by one
+        param_pattern = r'(tag:"([^"]+)"|limit:(\d+)|order:(asc|desc)|description:(True)|content:(True))'
+        params = re.findall(param_pattern, params_str)
+        for param in params:
+            if 'tag:' in param[0]:
+                tag = param[1]
+            elif 'limit:' in param[0]:
+                limit = int(param[2])
+            elif 'order:' in param[0]:
+                order = param[3]
+            elif 'description:' in param[0]:
+                description = param[4] == 'True'
+            # Only show content if injection is on page or homepage
+            elif 'content:' in param[0] and not post or post.is_page:
+                content = param[5] == 'True'
+
+        filtered_posts = apply_filters(blog.posts.filter(publish=True, is_page=False), tag, limit, order)
+        context = {'blog': blog, 'posts': filtered_posts, 'embed': True, 'show_description': description, 'show_content': content}
+        return render_to_string('snippets/post_list.html', context)
+
+    # Replace each matched directive with rendered content
     markup = re.sub(pattern, replace_with_filtered_posts, markup)
 
+    # Date translation replacement
     current_lang = "en" # translation.get_language()
     translation.activate(blog.lang)
     if post:
         translation.activate(post.lang)
 
-    markup = markup.replace('{{ email-signup }}', render_to_string('snippets/email_subscribe_form.html'))
-    markup = markup.replace('{{email-signup}}', render_to_string('snippets/email_subscribe_form.html'))
+    if blog.user.settings.upgraded:
+        markup = markup.replace('{{ email-signup }}', render_to_string('snippets/email_subscribe_form.html'))
+        markup = markup.replace('{{email-signup}}', render_to_string('snippets/email_subscribe_form.html'))
+    else:
+        markup = markup.replace('{{ email-signup }}', '')
+        markup = markup.replace('{{email-signup}}', '')
 
     markup = markup.replace('{{ blog_title }}', escape(blog.title))
     markup = markup.replace('{{ blog_description }}', escape(blog.meta_description))

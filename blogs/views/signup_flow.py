@@ -1,15 +1,13 @@
 
-import os
-from django.http import Http404
 from django.shortcuts import render, redirect
 from django.utils.text import slugify
 from django.contrib.auth import get_user_model, login
-from django.core.validators import validate_email
-from blogs.helpers import random_error_message
 
+from blogs.helpers import random_error_message
 from blogs.models import Blog
 
 from akismet import Akismet
+import os
 
 
 def signup(request):
@@ -22,7 +20,7 @@ def signup(request):
     error_messages = []
 
     if request.user.is_authenticated:
-        return redirect('dashboard')
+        return redirect('account')
 
     # Check password valid
     if password and len(password) < 6:
@@ -56,14 +54,16 @@ def signup(request):
             user = User.objects.create_user(username=email, email=email, password=password)
 
             user.backend = 'django.contrib.auth.backends.ModelBackend'
-
-            if not Blog.objects.filter(user=user).exists():
-                Blog.objects.create(title=title, subdomain=subdomain, content=content, user=user)
+            
+            blog = Blog.objects.filter(user=user).first()
+            if not blog:
+                blog = Blog.objects.create(title=title, subdomain=subdomain, content=content, user=user)
 
             # Log in the user
             login(request, user)
 
-            return redirect('dashboard')
+            
+            return redirect('dashboard', id=blog.subdomain)
 
     if title and subdomain and content and (not email or not password):
         return render(request, 'signup_flow/step_2.html', {

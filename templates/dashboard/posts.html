@@ -1,49 +1,43 @@
 {% extends 'base.html' %}
 
-{% block title %}Posts | Bear Blog{% endblock %}
+{% block title %}{% if pages %}Pages{% else %}Posts{% endif %} | Bear Blog{% endblock %}
 
 {% block custom_styles %}
     {% include 'styles/blog/default.css' %}
     {% include 'styles/dashboard.css' %}
-    {{ blog.dashboard_styles | safe }}
+    {{ request.user.settings.dashboard_styles | safe }}
 {% endblock %}
 
 {% block nav %}{% include '../snippets/dashboard_nav.html' %}{% endblock %}
 
 {% block content %}
-{% if not blog.reviewed and not blog.to_review and posts.count > 0 %}
-<p style="background-color: rgb(0,0,0,0.1); text-align:center; padding: 5px">
-    <i>
-        Want to show up on the
-        <a href="https://bearblog.dev/discover/" target="_blank">Discovery feed</a>?
-        <a href="/dashboard/opt-in-review/">Submit your blog for review</a>.
-    </i>
-</p>
-{% endif %}
 
-<h1>Posts</h1>
-<a href="/dashboard/posts/new">
+<h1>{% if pages %}Pages{% else %}Posts{% endif %}</h1>
+{% if pages %}
+<a href="{% url 'post_new' id=blog.subdomain %}?is_page=True">
+    <button>
+    New page
+    </button>
+</a>
+{% else %}
+<a href="{% url 'post_new' id=blog.subdomain %}">
     <button>
     New post
     </button>
 </a>
-<a style="float:right;" href="/dashboard/post-template">
+<a style="float:right;" href="{% url 'post_template' id=blog.subdomain %}">
     <button>Edit template</button>
 </a>
+{% endif %}
 <ul class="post-list">
     {% for post in posts %}
     <li>
         <span>
-            <i>
-                <time datetime="{{ post.published_date|date:'Y-m-d' }}">
-                    {{ post.published_date|date:'d M, Y' }}
-                </time>
-            </i>
+            <time datetime="{{ post.published_date|date:'Y-m-d' }}">
+                {{ post.published_date|date:'d M, Y' }}
+            </time>
         </span>
-        <a href="/dashboard/posts/{{ post.uid }}">
-            {% if post.is_page %}
-                [Page]
-            {% endif %}
+        <a href="{% url 'post_edit' id=blog.subdomain  uid=post.uid %}">
             {{ post.title }}
         </a>
         {% if not post.publish %}

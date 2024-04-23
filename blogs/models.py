@@ -2,15 +2,41 @@ from django.utils import timezone
 from django.db import models
 from django.contrib.auth.models import User
 from django.contrib.sites.models import Site
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+from allauth.account.models import EmailAddress
 
 import json
 from math import log
 import random
 import string
+import hashlib
+
+
+class UserSettings(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='settings', blank=True)
+    upgraded = models.BooleanField(default=False)
+    upgraded_date = models.DateTimeField(blank=True, null=True)
+    order_id = models.CharField(max_length=100, blank=True, null=True)
+
+    dashboard_styles = models.TextField(blank=True)
+    dashboard_footer = models.TextField(blank=True)
+
+    def __str__(self):
+        return f'{self.user} - Settings'
+
+
+# On User save, create UserSettigs
+@receiver(post_save, sender=User)
+def create_user_settings(sender, instance, **kwargs):
+    user_settings, created = UserSettings.objects.get_or_create(user=instance)
+    if user_settings.upgraded:
+        user_settings.user.blogs.update(reviewed=True)
 
 
 class Blog(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, blank=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, blank=True, related_name='blogs')
     title = models.CharField(max_length=200)
     created_date = models.DateTimeField(auto_now_add=True, blank=True)
     last_modified = models.DateTimeField(auto_now_add=True, blank=True)
@@ -32,11 +58,7 @@ class Blog(models.Model):
     ignored_date = models.DateTimeField(blank=True, null=True)
     to_review = models.BooleanField(default=False)
     reviewer_note = models.TextField(blank=True)
-
-    upgraded = models.BooleanField(default=False)
-    upgraded_date = models.DateTimeField(blank=True, null=True)
-    order_id = models.CharField(max_length=200, blank=True, null=True)
-    blocked = models.BooleanField(default=False)
+    deprioritise = models.BooleanField(default=False)
 
     custom_styles = models.TextField(blank=True)
     overwrite_styles = models.BooleanField(
@@ -44,9 +66,6 @@ class Blog(models.Model):
         choices=((True, 'Overwrite default styles'), (False, 'Extend default styles')),
         verbose_name='')
     favicon = models.CharField(max_length=10, default="🐼")
-
-    dashboard_styles = models.TextField(blank=True)
-    dashboard_footer = models.TextField(blank=True)
 
     date_format = models.CharField(max_length=32, blank=True)
 
@@ -61,6 +80,15 @@ class Blog(models.Model):
     @property
     def older_than_one_day(self):
         return (timezone.now() - self.created_date).days > 1
+    
+    @property
+    def created_after_mandatory_opt_in(self):
+        mandatory_opt_in_date = timezone.make_aware(timezone.datetime(2024, 2, 22))
+        return self.created_date > mandatory_opt_in_date
+
+    @property
+    def user_email_verified(self):
+        return EmailAddress.objects.filter(user=self.user, verified=True).exists()
 
     @property
     def contains_code(self):
@@ -92,7 +120,7 @@ class Blog(models.Model):
     @property
     def is_empty(self):
         content_length = len(self.content) if self.content is not None else 0
-        return not self.upgraded and content_length < 20 and self.post_set.count() == 0 and self.custom_styles == ""
+        return not self.user.settings.upgraded and content_length < 20 and self.posts.count() == 0 and self.custom_styles == ""
     
     @property
     def tags(self):
@@ -104,27 +132,28 @@ class Blog(models.Model):
     
     @property
     def last_posted(self):
-        return self.post_set.filter(publish=True, published_date__lt=timezone.now()).order_by('-published_date').values_list('published_date', flat=True).first()
+        return self.posts.filter(publish=True, published_date__lt=timezone.now()).order_by('-published_date').values_list('published_date', flat=True).first()
 
     def generate_auth_token(self):
         allowed_chars = string.ascii_letters.replace('O', '').replace('l', '')
         self.auth_token = ''.join(random.choice(allowed_chars) for _ in range(30))
         self.save()
 
-    # def save(self, *args, **kwargs):
+    def save(self, *args, **kwargs):
     #     # Create auth_token
     #     if not self.auth_token:
     #         allowed_chars = string.ascii_letters.replace('O', '').replace('l', '')
     #         self.auth_token = ''.join(random.choice(allowed_chars) for _ in range(20))
-
-    #     super(Blog, self).save(*args, **kwargs)
+        if self.user.settings.upgraded:
+            self.reviewed = True
+        super(Blog, self).save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.title} ({self.useful_domain})'
 
 
 class Post(models.Model):
-    blog = models.ForeignKey(Blog, on_delete=models.CASCADE)
+    blog = models.ForeignKey(Blog, on_delete=models.CASCADE, related_name='posts')
     uid = models.CharField(max_length=200)
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200)
@@ -154,6 +183,10 @@ class Post(models.Model):
     @property
     def tags(self):
         return sorted(json.loads(self.all_tags))
+    
+    @property
+    def token(self):
+        return hashlib.sha256(self.uid.encode()).hexdigest()[0:10]
 
     def update_score(self):
         self.upvotes = self.upvote_set.count()
@@ -163,11 +196,12 @@ class Post(models.Model):
 
             seconds = self.published_date.timestamp()
             if seconds > 0:
-                score = (log_of_upvotes) + ((seconds - 1577811600) / (14 * 86400))
+                if self.blog.deprioritise:
+                    score = 0
+                else:
+                    score = (log_of_upvotes) + ((seconds - 1577811600) / (14 * 86400))
                 self.score = score
-
         self.save()
-        return
     
     def save(self, *args, **kwargs):
         self.slug = self.slug.lower()
@@ -189,6 +223,13 @@ class Upvote(models.Model):
     post = models.ForeignKey(Post, on_delete=models.CASCADE)
     created_date = models.DateTimeField(auto_now_add=True)
     hash_id = models.CharField(max_length=200)
+
+    def save(self, *args, **kwargs):
+        # Save the Upvote instance
+        super(Upvote, self).save(*args, **kwargs)
+        
+        # Now that the Upvote is saved and counted, update the post score
+        self.post.update_score()
 
     def __str__(self):
         return f"{self.created_date.strftime('%d %b %Y, %X')} - {self.hash_id} - {self.post}"
@@ -238,7 +279,17 @@ class Stylesheet(models.Model):
 # Singleton model to store Bear specific settings
 class PersistentStore(models.Model):
     last_executed = models.DateTimeField(default=timezone.now)
+    review_ignore_terms = models.TextField(blank=True, default='[]')
+    review_highlight_terms = models.TextField(blank=True, default='[]')
 
+    @property
+    def ignore_terms(self):
+        return sorted(json.loads(self.review_ignore_terms))
+    
+    @property
+    def highlight_terms(self):
+        return sorted(json.loads(self.review_highlight_terms))
+    
     @classmethod
     def load(cls):
         obj, created = cls.objects.get_or_create(pk=1)

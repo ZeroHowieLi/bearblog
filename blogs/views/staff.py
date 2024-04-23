@@ -1,3 +1,4 @@
+import json
 from django.utils import timezone
 from django.contrib.admin.views.decorators import staff_member_required
 from django.http import HttpResponse
@@ -5,9 +6,10 @@ from django.db.models import Count, Q, F
 from django.shortcuts import get_object_or_404, redirect, render
 from django.db.models.functions import TruncDate, Length
 from django.http import JsonResponse
+from django.contrib.auth.models import User
 
 from blogs.helpers import send_async_mail
-from blogs.models import Blog
+from blogs.models import Blog, PersistentStore
 
 from datetime import timedelta
 import pygal
@@ -20,31 +22,27 @@ def dashboard(request):
     start_date = (timezone.now() - timedelta(days=days_filter)).date()
     end_date = timezone.now().date()
 
-    blogs = Blog.objects.filter(blocked=False, created_date__gt=start_date).order_by('created_date')
-
-    # Exclude empty blogs
-    non_empty_blog_ids = [blog.pk for blog in blogs if not blog.is_empty]
-    blogs = blogs.filter(pk__in=non_empty_blog_ids)
-
     to_review = blogs_to_review().count()
+
+    users = User.objects.filter(is_active=True, date_joined__gt=start_date).order_by('date_joined')
 
     # Signups
     date_iterator = start_date
-    blogs_count = blogs.annotate(date=TruncDate('created_date')).values('date').annotate(c=Count('date')).order_by()
+    user_count = users.annotate(date=TruncDate('date_joined')).values('date').annotate(c=Count('date')).order_by()
 
     # Create dates dict with zero signups
-    blog_dict = {}
+    user_dict = {}
     while date_iterator <= end_date:
-        blog_dict[date_iterator.strftime("%Y-%m-%d")] = 0
+        user_dict[date_iterator.strftime("%Y-%m-%d")] = 0
         date_iterator += timedelta(days=1)
 
     # Populate dict with signup count
-    for signup in blogs_count:
-        blog_dict[signup['date'].strftime("%Y-%m-%d")] = signup['c']
+    for signup in user_count:
+        user_dict[signup['date'].strftime("%Y-%m-%d")] = signup['c']
 
     # Generate chart
     chart_data = []
-    for date, count in blog_dict.items():
+    for date, count in user_dict.items():
         chart_data.append({'date': date, 'signups': count})
 
     chart = pygal.Bar(height=300, show_legend=False, style=LightColorizedStyle)
@@ -57,24 +55,24 @@ def dashboard(request):
 
     # Upgrades
     date_iterator = start_date
-    upgraded_blogs = Blog.objects.filter(upgraded=True, upgraded_date__gte=start_date).order_by('upgraded_date')
-    upgrades_count = upgraded_blogs.annotate(date=TruncDate('upgraded_date')).values('date').annotate(c=Count('date')).order_by()
+    upgraded_users = User.objects.filter(settings__upgraded=True, settings__upgraded_date__gte=start_date).order_by('settings__upgraded_date')
+    upgrades_count = upgraded_users.annotate(date=TruncDate('settings__upgraded_date')).values('date').annotate(c=Count('date')).order_by()
 
 
     # Create dates dict with zero upgrades
-    blog_dict = {}
+    user_dict = {}
     while date_iterator <= end_date:
-        blog_dict[date_iterator.strftime("%Y-%m-%d")] = 0
+        user_dict[date_iterator.strftime("%Y-%m-%d")] = 0
         date_iterator += timedelta(days=1)
 
     # Populate dict with signup count
     for signup in upgrades_count:
         if signup['date']:
-            blog_dict[signup['date'].strftime("%Y-%m-%d")] = signup['c']
+            user_dict[signup['date'].strftime("%Y-%m-%d")] = signup['c']
 
     # Generate chart
     chart_data = []
-    for date, count in blog_dict.items():
+    for date, count in user_dict.items():
         chart_data.append({'date': date, 'upgrades': count})
 
     chart = pygal.Bar(height=300, show_legend=False, style=LightColorizedStyle)
@@ -86,12 +84,12 @@ def dashboard(request):
     upgrade_chart = chart.render_data_uri()
 
     # Calculate signups and upgrades for the past month
-    signups = blogs.count()
-    upgrades = Blog.objects.filter(upgraded=True, upgraded_date__gt=start_date).count()
+    signups = users.count()
+    upgrades = User.objects.filter(settings__upgraded=True, settings__upgraded_date__gt=start_date).count()
 
     # Calculate all-time totals
-    total_signups = Blog.objects.count()
-    total_upgrades = Blog.objects.filter(upgraded=True).count()
+    total_signups = User.objects.count()
+    total_upgrades = User.objects.filter(settings__upgraded=True).count()
 
     # Calculate conversion rates
     conversion_rate = upgrades / signups if signups > 0 else 0
@@ -106,7 +104,6 @@ def dashboard(request):
         request,
         'staff/dashboard.html',
         {
-            'blogs': blogs,
             'signups': signups,
             'upgrades': upgrades,
             'total_signups': total_signups,
@@ -126,118 +123,31 @@ def dashboard(request):
 
 def get_empty_blogs():
     # Empty blogs
-    # Not used in the last 90 days
+    # Not used in the last 270 days
     # Most recent 100
-    timeperiod = timezone.now() - timedelta(days=90)
-    empty_blogs = Blog.objects.annotate(num_posts=Count('post')).annotate(content_length=Length('content')).filter(
-        last_modified__lte=timeperiod, num_posts__lte=0, content_length__lt=50, upgraded=False, custom_styles="").order_by('-created_date')[:100]
+    timeperiod = timezone.now() - timedelta(days=270)
+    empty_blogs = Blog.objects.annotate(num_posts=Count('posts')).annotate(content_length=Length('content')).filter(
+        last_modified__lte=timeperiod, num_posts__lte=0, content_length__lt=60, user__settings__upgraded=False, custom_styles="").order_by('-created_date')[:100]
 
     return empty_blogs
 
 
 def blogs_to_review():
     # Opted-in for review
-    to_review = Blog.objects.filter(reviewed=False, blocked=False, to_review=True)
+    to_review = Blog.objects.filter(reviewed=False, user__is_active=True, to_review=True)
 
     if to_review.count() < 1:
-        ignore_terms = [
-            'infp',
-            'isfj',
-            'infj',
-            'intj',
-            'intp',
-            'isfp',
-            'istp',
-            'istj',
-            'enfp',
-            'enfj',
-            'entp',
-            'entj',
-            'esfp',
-            'esfj',
-            'estp',
-            'estj',
-            '14',
-            '15',
-            '16',
-            '17',
-            '18',
-            '19',
-            '20',
-            'ooc',
-            'doll',
-            'he/',
-            'she/',
-            'they/',
-            'it/',
-            'masc terms',
-            'masculine',
-            'fem terms',
-            'feminine',
-            'pronouns',
-            'irl',
-            'prns',
-            'dni',
-            'dnf',
-            'dnm',
-            'byf',
-            'dfi',
-            'reqs',
-            'dm',
-            'pls',
-            'nsfw',
-            'wip',
-            'model',
-            'minor',
-            ':3',
-            '<3',
-            '♡',
-            'hii',
-            'heyy',
-            'lmao',
-            'Aries',
-            'Taurus',
-            'Gemini',
-            'Cancer',
-            'Leo',
-            'Virgo',
-            'Libra',
-            'Scorpio',
-            'Sagittarius',
-            'Capricorn',
-            'Aquarius',
-            'Pisces',
-            'animanga',
-            'manga',
-            'kdrama',
-            'idols',
-            'proship',
-            'haters',
-            'bpd',
-            'autistic',
-            'lesbian',
-            'gay',
-            'bisexual',
-            'intersex',
-            'pansexual',
-            'genderfluid',
-            'boyfriend',
-            'girlfriend',
-            'gf',
-            'bf',
-            'carrd',
-            'rentry'
-        ]
+        persistent_store = PersistentStore.load()
 
         new_blogs = Blog.objects.filter(
             reviewed=False, 
-            blocked=False, 
+            user__is_active=True, 
             to_review=False
         )
 
         # Dynamically build up a Q object for exclusion
         exclude_conditions = Q()
-        for term in ignore_terms:
+        for term in persistent_store.ignore_terms:
             exclude_conditions |= Q(content__icontains=term)
 
         # Apply the exclusion condition
@@ -260,39 +170,23 @@ def delete_empty(request):
 
 
 @staff_member_required
-def review_flow(request):
-    blog = blogs_to_review().first()
+def review_bulk(request):
+    blogs = blogs_to_review()[:100]
+    still_to_go = blogs.count()
+    persistent_store = PersistentStore.load()
 
-    if blog:
-        all_posts = blog.post_set.filter(publish=True).order_by('-published_date')
-
-        still_to_go = blogs_to_review().count() - 1
-
+    if blogs:
         return render(
             request,
-            'staff/review_flow.html',
+            'staff/review_bulk.html',
             {
-                'blog': blog,
-                'content': blog.content or "~nothing here~",
-                'posts': all_posts,
-                'root': blog.useful_domain,
+                'blogs': blogs,
                 'still_to_go': still_to_go,
+                'highlight_terms': persistent_store.highlight_terms
             }
         )
     else:
         return redirect('staff_dashboard')
-
-@staff_member_required
-def review_bulk(request):
-    blogs = blogs_to_review()[:20]
-
-    return render(
-        request,
-        'staff/review_bulk.html',
-        {
-            'blogs': blogs
-        }
-    )
 
 
 @staff_member_required
@@ -300,51 +194,76 @@ def approve(request, pk):
     blog = get_object_or_404(Blog, pk=pk)
     blog.reviewed = True
     blog.to_review = False
+    if request.GET.get("deprioritise", False):
+        blog.deprioritise = True
+
     blog.save()
 
-    message = request.POST.get("message", "Hey, I've just reviewed your blog. It looks good and has been approved.<br><br>Have a great week!<br>Herman")
-
-    if message and not request.GET.get("no-email", ""):
+    message = request.GET.get("message", "")
+    
+    if message:
         send_async_mail(
             "I've just reviewed your blog",
             message,
             'Herman Martinus <herman@bearblog.dev>',
             [blog.user.email]
         )
-    return redirect('review_flow')
+    return HttpResponse("Approved")
 
 
 @staff_member_required
 def block(request, pk):
     blog = get_object_or_404(Blog, pk=pk)
-    blog.blocked = True
-    blog.save()
-    return redirect('review_flow')
+    blog.user.is_active = not blog.user.is_active
+    blog.user.save()
+    return HttpResponse("Blocked")
 
 
 @staff_member_required
 def delete(request, pk):
     blog = get_object_or_404(Blog, pk=pk)
     blog.delete()
-    return redirect('review_flow')
+    return HttpResponse("Deleted")
 
 
 @staff_member_required
 def ignore(request, pk):
     blog = get_object_or_404(Blog, pk=pk)
     blog.ignored_date = timezone.now()
+    blog.to_review = False
     blog.save()
-    return redirect('review_flow')
+    return HttpResponse("Ignored")
 
 
-def extract_blog_info(blog):
-    posts_info = []
-    for post in blog.post_set.all():
-        posts_info.append({'title': post.title, 'content': post.content})
+@staff_member_required
+def migrate_blog(request):    
+    subdomain = request.POST.get('subdomain')
+    email = request.POST.get('email')
+    message = ""
+    if not email or not subdomain:
+        return HttpResponse("Both email and subdomain must be provided.")
+    
+    user = User.objects.filter(email=email).first()
+    if not user:
+        return HttpResponse("User not found.")
+    message += f"Found user: {user}...<br>"
+    
+    blog = Blog.objects.filter(subdomain=subdomain).first()
+    if not blog:
+        return HttpResponse("Blog not found.")
+    message += f"Found blog: {blog.title} ({blog.useful_domain})...<br>"
+    
+    old_user = blog.user
+    message += f'Migrating blog ({blog.title}) from {old_user} to {user}...<br>'
+    blog.user = user
+    blog.save()
 
-    return {
-        'title': blog.title,
-        'content': blog.content,
-        'url': blog.useful_domain,
-        'posts': posts_info
-    }
+    if old_user.blogs.count() == 0:
+        message += f'User {old_user} has no more blogs and will be deleted...<br>'
+        old_user.delete()
+        message += 'Deleted...\n'
+    
+    return HttpResponse(message)
+
+
+

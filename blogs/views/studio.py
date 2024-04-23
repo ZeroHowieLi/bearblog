@@ -1,39 +1,64 @@
-import json
 from django.contrib.auth.decorators import login_required
 from django.db import DataError
 from django.forms import ValidationError
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404, render, redirect
-from django.http import HttpResponseBadRequest
+from django.http import HttpResponse, HttpResponseBadRequest
 from django.utils import timezone
 from django.utils.text import slugify
 from django.core.validators import URLValidator
 
-from ipaddr import client_ip
-from random import randint
+import json
 import re
 import random
 import string
 
-from blogs.forms import AdvancedSettingsForm, PostTemplateForm
-from blogs.helpers import check_connection, is_protected, pseudo_word, salt_and_hash, sanitise_int
+from blogs.forms import AdvancedSettingsForm, BlogForm, DashboardCustomisationForm, PostTemplateForm
+from blogs.helpers import check_connection, is_protected, pseudo_word, salt_and_hash
 from blogs.models import Blog, Post, Upvote
+from blogs.subscriptions import get_subscriptions
 
 
 @login_required
-def studio(request):
-    blog = Blog.objects.filter(user=request.user).first()
+def list(request):
+    blogs = Blog.objects.filter(user=request.user)
+    if request.method == "POST":
+        form = BlogForm(request.POST)
+        if form.is_valid():
+            if blogs.count() >= 9:
+                form.add_error('title', 'You have reached the maximum number of blogs.')
+            else:
+                subdomain = slugify(form.cleaned_data['subdomain'])
 
-    if not blog:
-        subdomain = pseudo_word()
-        while Blog.objects.filter(subdomain=subdomain).exists():
-            subdomain = pseudo_word()
-        blog = Blog(
-            user=request.user,
-            title="My blog",
-            subdomain=subdomain)
-        blog.save()
+                if not is_protected(subdomain) and not Blog.objects.filter(subdomain=subdomain).exists():
+                    blog_info = form.save(commit=False)
+                    blog_info.user = request.user
+                    blog_info.save()
+                    return redirect('dashboard', id=blog_info.subdomain)
+                else:
+                    form.add_error('subdomain', 'This subdomain is already in use or protected.')
+    else:
+        form = BlogForm()
 
+    subscription_cancelled = None
+    subscription_link = None
+
+    if request.user.settings.order_id:
+        subscription = get_subscriptions(request.user.settings.order_id)
+
+        try:
+            if subscription:
+                subscription_cancelled = subscription['data'][0]['attributes']['cancelled']
+                subscription_link = subscription['data'][0]['attributes']['urls']['customer_portal']
+        except KeyError and IndexError:
+            print('No sub found')
+
+    return render(request, 'studio/blog_list.html', {'blogs': blogs, 'form': form, 'subscription_cancelled': subscription_cancelled, 'subscription_link': subscription_link})
+
+
+@login_required
+def studio(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     error_messages = []
     header_content = request.POST.get('header_content', '')
@@ -51,6 +76,9 @@ def studio(request):
 
     info_message = blog.domain and not check_connection(blog)
 
+    if not blog.subdomain == id:
+        return redirect('dashboard', id=blog.subdomain)
+
     return render(request, 'studio/studio.html', {
         'blog': blog,
         'error_messages': error_messages,
@@ -60,8 +88,8 @@ def studio(request):
 
 
 def parse_raw_homepage(blog, header_content, body_content):
-    raw_header = list(filter(None, header_content.split('\r\n')))
-
+    raw_header = [item for item in header_content.split('\r\n') if item]
+    
     # Clear out data
     blog.domain = ''
     blog.meta_description = ''
@@ -96,7 +124,7 @@ def parse_raw_homepage(blog, header_content, body_content):
                 else:
                     error_messages.append(f"{value} has already been taken")
         elif name == "custom_domain":
-            if blog.upgraded:
+            if blog.user.settings.upgraded:
                 if Blog.objects.filter(domain=value).exclude(pk=blog.pk).count() == 0:
                     try:
                         validator = URLValidator()
@@ -145,8 +173,9 @@ def parse_raw_homepage(blog, header_content, body_content):
 
 
 @login_required
-def post(request, uid=None):
-    blog = get_object_or_404(Blog, user=request.user)
+def post(request, id, uid=None):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+    is_page = request.GET.get('is_page', '')
     tags = []
     post = None
 
@@ -159,7 +188,7 @@ def post(request, uid=None):
     preview = request.POST.get("preview", False) == "true"
 
     if request.method == "POST" and header_content:
-        header_content = list(filter(None, header_content.split('\r\n')))
+        raw_header = [item for item in header_content.split('\r\n') if item]
         is_new = False
 
         if not post:
@@ -180,7 +209,7 @@ def post(request, uid=None):
             post.all_tags = '[]'
 
             # Parse and populate header data
-            for item in header_content:
+            for item in raw_header:
                 item = item.split(':', 1)
                 name = item[0].strip()
                 value = item[1].strip()
@@ -204,7 +233,11 @@ def post(request, uid=None):
                         except ValueError:
                             error_messages.append('Bad date format. Use YYYY-MM-DD')
                 elif name == 'tags':
-                    tags = list(set([tag.strip() for tag in value.split(',')]))
+                    tags = []
+                    for tag in value.split(','):
+                        stripped_tag = tag.strip()
+                        if stripped_tag and stripped_tag not in tags:
+                            tags.append(stripped_tag)
                     post.all_tags = json.dumps(tags)
                 elif name == 'make_discoverable':
                     if type(value) is bool:
@@ -251,10 +284,9 @@ def post(request, uid=None):
                     # Self-upvote
                     upvote = Upvote(post=post, hash_id=salt_and_hash(request, 'year'))
                     upvote.save()
-                    post.update_score()
 
                     # Redirect to the new post detail view
-                    return redirect('post_edit', uid=post.uid)
+                    return redirect('post_edit', id=blog.subdomain, uid=post.uid)
 
         except ValidationError:
             error_messages.append("One of the header options is invalid")
@@ -278,7 +310,8 @@ def post(request, uid=None):
         'post': post,
         'error_messages': error_messages,
         'template_header': template_header,
-        'template_body': template_body
+        'template_body': template_body,
+        'is_page': is_page
     })
 
 
@@ -296,8 +329,8 @@ def unique_slug(blog, post, new_slug):
 
 @csrf_exempt
 @login_required
-def preview(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def preview(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     post = Post(blog=blog)
 
@@ -305,7 +338,7 @@ def preview(request):
     body_content = request.POST.get("body_content", "")
     try:
         if header_content:
-            header_content = list(filter(None, header_content.split('\r\n')))
+            raw_header = [item for item in header_content.split('\r\n') if item]
 
             if post is None:
                 post = Post(blog=blog)
@@ -322,7 +355,7 @@ def preview(request):
             post.lang = ''
 
             # Parse and populate header data
-            for item in header_content:
+            for item in raw_header:
                 item = item.split(':', 1)
                 name = item[0].strip()
                 value = item[1].strip()
@@ -397,8 +430,8 @@ def preview(request):
 
 
 @login_required
-def post_template(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def post_template(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == "POST":
         form = PostTemplateForm(request.POST, instance=blog)
@@ -414,11 +447,11 @@ def post_template(request):
 
 
 @login_required
-def directive_edit(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def directive_edit(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
-    if not blog.upgraded:
-        return redirect('/dashboard/upgrade/')
+    if not blog.user.settings.upgraded:
+        return redirect('upgrade')
 
     header = request.POST.get("header", "")
     footer = request.POST.get("footer", "")
@@ -433,8 +466,8 @@ def directive_edit(request):
     })
 
 @login_required
-def advanced_settings(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def advanced_settings(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == "POST":
         form = AdvancedSettingsForm(request.POST, instance=blog)
@@ -447,3 +480,16 @@ def advanced_settings(request):
     return render(request, 'dashboard/advanced_settings.html', {
         'blog': blog,
         'form': form})
+
+
+@login_required
+def dashboard_customisation(request):
+    if request.method == "POST":
+        form = DashboardCustomisationForm(request.POST, instance=request.user.settings)
+        if form.is_valid():
+            user_settings = form.save(commit=False)
+            user_settings.save()
+    else:
+        form = DashboardCustomisationForm(instance=request.user.settings)
+
+    return render(request, 'dashboard/dashboard_customisation.html', {'form': form})

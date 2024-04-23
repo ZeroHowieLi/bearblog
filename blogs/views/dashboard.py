@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.db.models import Count
 from django.contrib.auth import get_user_model
 
+
 from ipaddr import client_ip
 from unicodedata import lookup
 import json
@@ -18,14 +19,13 @@ import djqscsv
 from botocore.config import Config
 
 from blogs.forms import NavForm, StyleForm
-from blogs.helpers import get_country, sanitise_int
-from blogs.models import Blog, Post, Stylesheet, Upvote
-from blogs.subscriptions import get_subscriptions
+from blogs.helpers import get_country
+from blogs.models import Blog, Post, Stylesheet
 
 
 @login_required
-def nav(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def nav(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == "POST":
         form = NavForm(request.POST, instance=blog)
@@ -45,8 +45,8 @@ def nav(request):
 
 
 @login_required
-def styles(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def styles(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == "POST":
         form = StyleForm(
@@ -68,7 +68,7 @@ def styles(request):
         if request.GET.get("preview", False):
             return render(request, 'home.html', {'blog': blog, 'preview': True})
         blog.save()
-        return redirect('/dashboard/styles/')
+        return redirect('styles', id=blog.subdomain)
 
     return render(request, 'dashboard/styles.html', {
         'blog': blog,
@@ -78,31 +78,54 @@ def styles(request):
 
 
 @login_required
-def posts_edit(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def blog_delete(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+    blog.delete()
+    return redirect('account')
 
-    posts = Post.objects.annotate(
-        hit_count=Count('hit')).filter(blog=blog).order_by('-published_date')
+
+@login_required
+def posts_edit(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+
+    posts = Post.objects.filter(blog=blog, is_page=False).order_by('-published_date')
 
     return render(request, 'dashboard/posts.html', {
+        'pages': False,
+        'blog': blog,
         'posts': posts,
-        'blog': blog
+    })
+
+@login_required
+def pages_edit(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+
+    posts = Post.objects.filter(blog=blog, is_page=True).order_by('-published_date')
+
+    return render(request, 'dashboard/posts.html', {
+        'pages': True,
+        'blog': blog,
+        'posts': posts,
     })
 
 
 @login_required
-def post_delete(request, uid):
-    blog = get_object_or_404(Blog, user=request.user)
+def post_delete(request, id, uid):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
     post = get_object_or_404(Post, blog=blog, uid=uid)
+    is_page = post.is_page
     post.delete()
-    return redirect('/dashboard/posts/')
+    if is_page:
+        return redirect('pages_edit', id=blog.subdomain)
+    return redirect('posts_edit', id=blog.subdomain)
 
 
 @csrf_exempt
-def upload_image(request):
-    blog = get_object_or_404(Blog, user=request.user)
+@login_required
+def upload_image(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
-    if request.method == "POST" and blog.upgraded is True:
+    if request.method == "POST" and blog.user.settings.upgraded is True:
         file_links = []
         time_string = str(time.time()).split('.')[0]
         count = 0
@@ -138,8 +161,6 @@ def upload_image(request):
 
 @login_required
 def upgrade(request):
-    blog = get_object_or_404(Blog, user=request.user)
-
     country = get_country(client_ip(request))
     country_name = ''
     country_emoji = ''
@@ -147,9 +168,10 @@ def upgrade(request):
     discount = 0
 
     country_code = country.get("country_code")
-
+   
     if country_code:
         country_name = country.get('country_name', {})
+        
         country_emoji = lookup(
             f'REGIONAL INDICATOR SYMBOL LETTER {country_code[0]}') + lookup(f'REGIONAL INDICATOR SYMBOL LETTER {country_code[1]}')
 
@@ -174,7 +196,7 @@ def upgrade(request):
             discount = 50
 
     return render(request, "dashboard/upgrade.html", {
-        "blog": blog,
+
         "country_name": country_name,
         "country_emoji": country_emoji,
         "discount": discount,
@@ -183,8 +205,8 @@ def upgrade(request):
 
 
 @login_required
-def opt_in_review(request):
-    blog = get_object_or_404(Blog, user=request.user)
+def opt_in_review(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == 'POST':
         spam = request.POST.get("spam", "")
@@ -198,32 +220,18 @@ def opt_in_review(request):
 
 
 @login_required
-def settings(request):
-    blog = get_object_or_404(Blog, user=request.user)
-    subscription_cancelled = None
-    subscription_link = None
-
-    if blog.order_id:
-        subscription = get_subscriptions(blog.order_id)
-
-        try:
-            if subscription:
-                subscription_cancelled = subscription['data'][0]['attributes']['cancelled']
-                subscription_link = subscription['data'][0]['attributes']['urls']['customer_portal']
-        except KeyError and IndexError:
-            print('No sub found')
-
+def settings(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+    
     if request.GET.get("export", ""):
-        return djqscsv.render_to_csv_response(blog.post_set)
+        return djqscsv.render_to_csv_response(blog.posts)
     
     if request.GET.get("generate"):
         blog.generate_auth_token()
-        return redirect("settings")
+        return redirect('settings', subdomain=blog.subdomain)
 
-    return render(request, "dashboard/account.html", {
+    return render(request, "dashboard/settings.html", {
         "blog": blog,
-        'subscription_cancelled': subscription_cancelled,
-        'subscription_link': subscription_link
     })
 
 
@@ -235,8 +243,3 @@ def delete_user(request):
         return redirect('/')
 
     return render(request, 'account/account_confirm_delete.html')
-
-
-class PostDelete(DeleteView):
-    model = Post
-    success_url = '/dashboard/posts'

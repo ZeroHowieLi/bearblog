@@ -5,15 +5,14 @@
 {% block custom_styles %}
     {% include 'styles/blog/default.css' %}
     {% include 'styles/dashboard.css' %}
-    {{ blog.dashboard_styles | safe }}
+    {{ request.user.settings.dashboard_styles | safe }}
 {% endblock %}
 
-{% block nav %}{% include '../snippets/dashboard_nav.html' %}{% endblock %}
-
 {% block content %}
+<button onclick="window.history.back()">← Back</button>
 <h1>Upgrade</h1>
 
-{% if not blog.upgraded %}
+{% if not request.user.settings.upgraded %}
 <h3>Keep the tiny internet awesome!  \ʕ•ᴥ•ʔ/</h2>
 <p>
     Bear will never sell your data, or display ads.
@@ -23,16 +22,17 @@
     I charge for the most resource-intensive features:
     <ul>
         <li>Custom domains</li>
+        <li>Publish up to 10 sites</li>
         <li>Image uploading</li>
         <li>In-depth analytics</li>
+        <li>Email subscriber capture</li>
         <li>Run JS scripts</li>
-        <li>Email subscriber list</li>
         <li>Add code to head and footer</li>
     </ul>
 </p>
 <p>
     <b>
-        Upgrade $5 per month <small style="font-size: 10px; color: grey;">(or $48 per year)</small>
+        Upgrade for $5 per month <small style="font-size: 10px; color: grey;">(or $48 per year)</small>
     </b>
 </p>
 
@@ -45,7 +45,7 @@
 {% endif %}
 
 <p>
-    <button onclick="window.open('https://bear.lemonsqueezy.com/checkout/buy/2f0a4d87-10d9-4a74-b241-ba2c4d6b821b?checkout[custom][blog]={{blog.subdomain}}')">Upgrade</button>
+    <button onclick="window.open('https://bear.lemonsqueezy.com/checkout/buy/2f0a4d87-10d9-4a74-b241-ba2c4d6b821b?checkout[custom][user_id]={{user.id}}')">Upgrade</button>
 </p>
 
 <small>

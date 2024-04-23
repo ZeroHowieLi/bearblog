@@ -31,7 +31,7 @@ def resolve_address(request):
         return None
     elif any(site.domain in http_host for site in sites):
         # Subdomained blog
-        return get_object_or_404(Blog, subdomain__iexact=tldextract.extract(http_host).subdomain, blocked=False)
+        return get_object_or_404(Blog, subdomain__iexact=tldextract.extract(http_host).subdomain, user__is_active=True)
     else:
         # Custom domain blog
         return get_blog_with_domain(http_host)
@@ -41,13 +41,13 @@ def get_blog_with_domain(domain):
     if not domain:
         return False
     try:
-        return Blog.objects.get(domain=domain, blocked=False)
+        return Blog.objects.get(domain=domain, user__is_active=True)
     except Blog.DoesNotExist:
         # Handle www subdomain if necessary
         if 'www.' in domain:
-            return get_object_or_404(Blog, domain__iexact=domain.replace('www.', ''), blocked=False)
+            return get_object_or_404(Blog, domain__iexact=domain.replace('www.', ''), user__is_active=True)
         else:
-            return get_object_or_404(Blog, domain__iexact=f'www.{domain}', blocked=False)
+            return get_object_or_404(Blog, domain__iexact=f'www.{domain}', user__is_active=True)
 
 
 @csrf_exempt
@@ -69,7 +69,7 @@ def home(request):
         daily_task()
         return render(request, 'landing.html')
 
-    all_posts = blog.post_set.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
+    all_posts = blog.posts.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
 
     meta_description = blog.meta_description or unmark(blog.content)
 
@@ -95,7 +95,7 @@ def posts(request):
         posts = Post.objects.filter(blog=blog, publish=True, published_date__lte=timezone.now()).order_by('-published_date')
         blog_posts = [post for post in posts if tag in post.tags]
     else:
-        all_posts = blog.post_set.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
+        all_posts = blog.posts.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
         blog_posts = get_posts(all_posts)
 
     meta_description = blog.meta_description or unmark(blog.content)
@@ -134,7 +134,7 @@ def post(request, slug):
         # Find by post alias
         post = Post.objects.filter(blog=blog, alias__iexact=slug).first()
         if post:
-            return redirect(f"/{post.slug}")
+            return redirect('post', slug=post.slug)
         else:
             return render(request, '404.html', {'blog': blog}, status=404)
 
@@ -149,7 +149,7 @@ def post(request, slug):
     if post.canonical_url and post.canonical_url.startswith('https://'):
         canonical_url = post.canonical_url
 
-    if post.publish is False and not request.GET.get('preview', False):
+    if post.publish is False and not request.GET.get('token') == post.token:
         return not_found(request)
 
     return render(
@@ -230,8 +230,6 @@ def upvote(request, uid):
         print("Upvoting", post)
         upvote, created = Upvote.objects.get_or_create(post=post, hash_id=hash_id)
 
-        post.update_score()
-
         if created:
             return HttpResponse(f'Upvoted {post.title}')
         raise Http404('Duplicate upvote')
@@ -243,7 +241,7 @@ def public_analytics(request):
     if not blog:
         return not_found(request)
 
-    if not blog or not blog.upgraded or not blog.public_analytics:
+    if not blog or not blog.user.settings.upgraded or not blog.public_analytics:
         return not_found(request)
 
     return render_analytics(request, blog, True)
@@ -257,7 +255,7 @@ def sitemap(request):
     blog = resolve_address(request)
     posts = []
     try:
-        posts = blog.post_set.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
+        posts = blog.posts.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
     except AttributeError:
         posts = []
 
