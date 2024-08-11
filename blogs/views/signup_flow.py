@@ -1,18 +1,19 @@
 
+from django.db import IntegrityError
 from django.shortcuts import render, redirect
 from django.utils.text import slugify
 from django.contrib.auth import get_user_model, login
 
-from blogs.helpers import random_error_message
 from blogs.models import Blog
 
 from akismet import Akismet
+import random
 import os
 
 
 def signup(request):
     title = request.POST.get('title', '')
-    subdomain = slugify(request.POST.get('subdomain', ''))
+    subdomain = slugify(request.POST.get('subdomain', '')).replace('_', '-')
     content = request.POST.get('content', '')
     email = request.POST.get('email', '')
     password = request.POST.get('password', '')
@@ -51,19 +52,23 @@ def signup(request):
         if user:
             error_messages.append('An account with this email address already exists.')
         else:
-            user = User.objects.create_user(username=email, email=email, password=password)
-
-            user.backend = 'django.contrib.auth.backends.ModelBackend'
+            try:
+                user = User.objects.create_user(username=email, email=email, password=password)
+                user.backend = 'django.contrib.auth.backends.ModelBackend'
             
-            blog = Blog.objects.filter(user=user).first()
-            if not blog:
-                blog = Blog.objects.create(title=title, subdomain=subdomain, content=content, user=user)
+                blog = Blog.objects.filter(user=user).first()
+                if not blog:
+                    blog = Blog.objects.create(title=title, subdomain=subdomain, content=content, user=user)
 
-            # Log in the user
-            login(request, user)
+                # Log in the user
+                login(request, user)
+
+                return redirect('dashboard', id=blog.subdomain)
+            except IntegrityError:
+                error_messages.append('An account with this email address already exists.')
+                
 
             
-            return redirect('dashboard', id=blog.subdomain)
 
     if title and subdomain and content and (not email or not password):
         return render(request, 'signup_flow/step_2.html', {
@@ -116,3 +121,16 @@ def spam_check(title, content, email, user_ip, user_agent):
     if is_spam > 0:
         return True
     return False
+
+
+def random_error_message():
+    errors = [
+        'Whoops. Looks like our servers are bearly functioning. Try again later.',
+        'Ensure content contains necessary parameters.',
+        'Something went wrong. Please try restarting your computer.',
+        'Your password needs a special character, a number, and a capital letter.',
+        'Ensure content is the correct length.',
+        'Bear with us as we fix our software.'
+    ]
+
+    return random.choice(errors)

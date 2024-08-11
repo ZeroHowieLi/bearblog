@@ -1,15 +1,13 @@
-import json
 from django.utils import timezone
 from django.contrib.admin.views.decorators import staff_member_required
 from django.http import HttpResponse
-from django.db.models import Count, Q, F
+from django.db.models import Q, F, Count
+from django.db.models.functions import Length, TruncDate, Length
 from django.shortcuts import get_object_or_404, redirect, render
-from django.db.models.functions import TruncDate, Length
-from django.http import JsonResponse
 from django.contrib.auth.models import User
 
 from blogs.helpers import send_async_mail
-from blogs.models import Blog, PersistentStore
+from blogs.models import Blog, PersistentStore, Post
 
 from datetime import timedelta
 import pygal
@@ -22,7 +20,11 @@ def dashboard(request):
     start_date = (timezone.now() - timedelta(days=days_filter)).date()
     end_date = timezone.now().date()
 
-    to_review = blogs_to_review().count()
+    opt_in_blogs_count = opt_in_blogs().count()
+    dodgy_blogs_count = dodgy_blogs().count()
+    new_blogs_count = new_blogs().count()
+
+    all_empty_blogs = empty_blogs()
 
     users = User.objects.filter(is_active=True, date_joined__gt=start_date).order_by('date_joined')
 
@@ -98,8 +100,6 @@ def dashboard(request):
     formatted_conversion_rate = f"{conversion_rate*100:.2f}%"
     formatted_total_conversion_rate = f"{total_conversion_rate*100:.2f}%"
 
-    empty_blogs = get_empty_blogs()
-
     return render(
         request,
         'staff/dashboard.html',
@@ -114,64 +114,77 @@ def dashboard(request):
             'upgrade_chart': upgrade_chart,
             'start_date': start_date,
             'end_date': end_date,
-            'to_review': to_review,
-            'empty_blogs': empty_blogs,
+            'opt_in_blogs_count': opt_in_blogs_count,
+            'dodgy_blogs_count': dodgy_blogs_count,
+            'new_blogs_count': new_blogs_count,
+            'empty_blogs': all_empty_blogs,
             'days_filter': days_filter
         }
     )
 
 
-def get_empty_blogs():
-    # Empty blogs
-    # Not used in the last 270 days
-    # Most recent 100
-    timeperiod = timezone.now() - timedelta(days=270)
-    empty_blogs = Blog.objects.annotate(num_posts=Count('posts')).annotate(content_length=Length('content')).filter(
-        last_modified__lte=timeperiod, num_posts__lte=0, content_length__lt=60, user__settings__upgraded=False, custom_styles="").order_by('-created_date')[:100]
-
-    return empty_blogs
-
-
-def blogs_to_review():
-    # Opted-in for review
-    to_review = Blog.objects.filter(reviewed=False, user__is_active=True, to_review=True)
-
-    if to_review.count() < 1:
-        persistent_store = PersistentStore.load()
-
-        new_blogs = Blog.objects.filter(
-            reviewed=False, 
-            user__is_active=True, 
-            to_review=False
-        )
-
-        # Dynamically build up a Q object for exclusion
-        exclude_conditions = Q()
-        for term in persistent_store.ignore_terms:
-            exclude_conditions |= Q(content__icontains=term)
-
-        # Apply the exclusion condition
-        new_blogs = new_blogs.exclude(exclude_conditions).filter(
-            Q(ignored_date__lt=F('last_modified')) | Q(ignored_date__isnull=True)
-        )
-        
-        to_review = new_blogs
-    
-    return to_review.order_by('created_date')
-
-
 @staff_member_required
 def delete_empty(request):
-    for blog in get_empty_blogs():
-        print(f'Deleting {blog}')
+    for blog in empty_blogs():
         blog.delete()
 
     return redirect('staff_dashboard')
 
 
+def empty_blogs():
+    # Not used in the last year
+    timeperiod = timezone.now() - timedelta(days=365)
+    blogs = Blog.objects.annotate(num_posts=Count('posts')).annotate(content_length=Length('content')).filter(
+        last_modified__lte=timeperiod, num_posts__lte=0, content_length__lt=60, user__settings__upgraded=False, custom_styles="").order_by('-created_date')[:100]
+
+    return blogs
+
+
+def new_blogs():
+    persistent_store = PersistentStore.load()
+    ignore_terms = persistent_store.ignore_terms
+
+    to_review = Blog.objects.filter(
+        Q(ignored_date__lt=F('last_modified')) | Q(ignored_date__isnull=True),
+        reviewed=False,
+        user__is_active=True,
+        to_review=False,
+        created_date__lte=timezone.now() - timedelta(days=2)
+    ).order_by('created_date')
+
+    for term in ignore_terms:
+        to_review = to_review.exclude(content__icontains=term)
+    
+    return to_review
+
+
+def opt_in_blogs():
+    to_review = Blog.objects.filter(reviewed=False, user__is_active=True, to_review=True).order_by('created_date')
+    
+    return to_review
+
+
+def dodgy_blogs():
+    to_review = Blog.objects.filter(
+        reviewed=False,
+        user__is_active=True,
+        to_review=False,
+        dodginess_score__gt=2,
+        ignored_date__isnull=True
+    ).prefetch_related('posts').order_by('-dodginess_score')
+
+    return to_review
+
+
 @staff_member_required
 def review_bulk(request):
-    blogs = blogs_to_review()[:100]
+    if 'opt-in' in request.path:
+        blogs = opt_in_blogs()[:100]
+    elif 'new' in request.path:
+        blogs = new_blogs()[:100]
+    elif 'dodgy' in request.path:
+        blogs = dodgy_blogs()[:100]
+
     still_to_go = blogs.count()
     persistent_store = PersistentStore.load()
 
@@ -191,79 +204,85 @@ def review_bulk(request):
 
 @staff_member_required
 def approve(request, pk):
-    blog = get_object_or_404(Blog, pk=pk)
-    blog.reviewed = True
-    blog.to_review = False
-    if request.GET.get("deprioritise", False):
-        blog.deprioritise = True
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, pk=pk)
+        blog.reviewed = True
+        blog.to_review = False
+        
+        if request.POST.get("hide", False):
+            blog.hidden = True
 
-    blog.save()
+        blog.save()
 
-    message = request.GET.get("message", "")
-    
-    if message:
-        send_async_mail(
-            "I've just reviewed your blog",
-            message,
-            'Herman Martinus <herman@bearblog.dev>',
-            [blog.user.email]
-        )
-    return HttpResponse("Approved")
+        message = request.POST.get("message", "")
+        
+        if message:
+            send_async_mail(
+                "I've just reviewed your blog",
+                message,
+                'Herman Martinus <herman@bearblog.dev>',
+                [blog.user.email]
+            )
+        return HttpResponse("Approved")
 
 
 @staff_member_required
 def block(request, pk):
-    blog = get_object_or_404(Blog, pk=pk)
-    blog.user.is_active = not blog.user.is_active
-    blog.user.save()
-    return HttpResponse("Blocked")
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, pk=pk)
+        blog.user.is_active = not blog.user.is_active
+        blog.user.save()
+        return HttpResponse("Blocked")
 
 
 @staff_member_required
 def delete(request, pk):
-    blog = get_object_or_404(Blog, pk=pk)
-    blog.delete()
-    return HttpResponse("Deleted")
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, pk=pk)
+        blog.delete()
+        return HttpResponse("Deleted")
 
 
 @staff_member_required
 def ignore(request, pk):
-    blog = get_object_or_404(Blog, pk=pk)
-    blog.ignored_date = timezone.now()
-    blog.to_review = False
-    blog.save()
-    return HttpResponse("Ignored")
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, pk=pk)
+        blog.ignored_date = timezone.now()
+        blog.to_review = False
+        blog.save()
+        return HttpResponse("Ignored")
 
 
 @staff_member_required
-def migrate_blog(request):    
-    subdomain = request.POST.get('subdomain')
-    email = request.POST.get('email')
-    message = ""
-    if not email or not subdomain:
-        return HttpResponse("Both email and subdomain must be provided.")
-    
-    user = User.objects.filter(email=email).first()
-    if not user:
-        return HttpResponse("User not found.")
-    message += f"Found user: {user}...<br>"
-    
-    blog = Blog.objects.filter(subdomain=subdomain).first()
-    if not blog:
-        return HttpResponse("Blog not found.")
-    message += f"Found blog: {blog.title} ({blog.useful_domain})...<br>"
-    
-    old_user = blog.user
-    message += f'Migrating blog ({blog.title}) from {old_user} to {user}...<br>'
-    blog.user = user
-    blog.save()
+def migrate_blog(request):
+    if request.method == "POST":
+        subdomain = request.POST.get('subdomain')
+        email = request.POST.get('email')
+        message = ""
+        if not email or not subdomain:
+            return HttpResponse("Both email and subdomain must be provided.")
+        
+        user = User.objects.filter(email=email).first()
+        if not user:
+            return HttpResponse("User not found.")
+        message += f"Found user: {user}...<br>"
+        
+        blog = Blog.objects.filter(subdomain=subdomain).first()
+        if not blog:
+            return HttpResponse("Blog not found.")
+        message += f"Found blog: {blog.title} ({blog.useful_domain})...<br>"
+        
+        old_user = blog.user
+        message += f'Migrating blog ({blog.title}) from {old_user} to {user}...<br>'
+        blog.user = user
+        blog.save()
 
-    if old_user.blogs.count() == 0:
-        message += f'User {old_user} has no more blogs and will be deleted...<br>'
-        old_user.delete()
-        message += 'Deleted...\n'
-    
-    return HttpResponse(message)
+        if old_user.blogs.count() == 0:
+            message += f'User {old_user} has no more blogs and will be deleted...<br>'
+            old_user.delete()
+            message += 'Deleted...\n'
+        
+        return HttpResponse(message)
 
 
 

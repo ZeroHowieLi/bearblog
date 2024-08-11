@@ -13,6 +13,35 @@
 {% block content %}
 <h1>Settings</h1>
 <p>
+    <form method="POST" class="post-form full-width">
+        {% csrf_token %}
+        {% if error_messages %}
+        <p style="color:lightsalmon">
+            {% for error_message in error_messages %}
+                {{ error_message }}<br>
+            {% endfor %}
+        </p>
+        {% endif %}
+        <label for="slug">Subdomain</label>
+        <br>
+        <div style="display: flex;align-items:end">
+            <input
+                type="text" name="subdomain"
+                value="{{ blog.subdomain }}"
+                required autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+                style="max-width:200px; margin-right: 10px;"
+            />
+            <span class="helptext">.bearblog.dev</span>
+        </div>
+        <button type="submit">Save</button>
+    </form>
+</p>
+<p>
+    <a href="{% url 'custom_domain_edit' id=blog.subdomain %}">Custom domain</a>
+</p>
+<p>
     <a href="{% url 'directive_edit' id=blog.subdomain %}">Header and footer directives</a>
 </p>
 <p>
@@ -35,10 +64,11 @@
 <p>
     <a href="?export=true" download>Export all blog data</a>
 </p>
-<p>
-    <a onclick="if (confirm('Are you sure you would like to delete {{ blog.subdomain }}? This cannot be undone.')) { window.location.href='{% url 'blog_delete' blog.subdomain %}'; }">
-        Delete blog
-    </a>
 
-</p>
+<form method="post" action="{% url 'blog_delete' blog.subdomain %}">
+    {% csrf_token %}
+    <button type="submit" onclick="return confirm('Are you sure you would like to delete {{ blog.subdomain }}? This cannot be undone.');">
+        Delete blog
+    </button>
+</form>
 {% endblock %}

@@ -3,18 +3,18 @@ from django.db import DataError
 from django.forms import ValidationError
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404, render, redirect
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import HttpResponseBadRequest
 from django.utils import timezone
 from django.utils.text import slugify
 from django.core.validators import URLValidator
 
+from datetime import datetime
 import json
-import re
 import random
 import string
 
 from blogs.forms import AdvancedSettingsForm, BlogForm, DashboardCustomisationForm, PostTemplateForm
-from blogs.helpers import check_connection, is_protected, pseudo_word, salt_and_hash
+from blogs.helpers import check_connection, is_protected, salt_and_hash
 from blogs.models import Blog, Post, Upvote
 from blogs.subscriptions import get_subscriptions
 
@@ -64,7 +64,7 @@ def studio(request, id):
     header_content = request.POST.get('header_content', '')
     body_content = request.POST.get('body_content', '')
 
-    if header_content:
+    if request.method == "POST" and header_content:
         try:
             error_messages.extend(parse_raw_homepage(blog, header_content, body_content))
         except IndexError:
@@ -74,16 +74,10 @@ def studio(request, id):
         except DataError as error:
             error_messages.append(error)
 
-    info_message = blog.domain and not check_connection(blog)
-
-    if not blog.subdomain == id:
-        return redirect('dashboard', id=blog.subdomain)
-
     return render(request, 'studio/studio.html', {
         'blog': blog,
         'error_messages': error_messages,
         'header_content': header_content,
-        'info_message': info_message
     })
 
 
@@ -91,10 +85,9 @@ def parse_raw_homepage(blog, header_content, body_content):
     raw_header = [item for item in header_content.split('\r\n') if item]
     
     # Clear out data
-    blog.domain = ''
+    blog.favicon = ''
     blog.meta_description = ''
     blog.meta_image = ''
-    blog.meta_tag = ''
     blog.lang = 'en'
     blog.date_format = ''
 
@@ -111,49 +104,17 @@ def parse_raw_homepage(blog, header_content, body_content):
 
         if name == 'title':
             blog.title = value
-        elif name == 'bear_domain':
-            subdomain = slugify(value.split('.')[0]).replace('_', '-')
-            if not subdomain:
-                error_messages.append("{value} is not a valid bear_domain")
-            else:
-                if not Blog.objects.filter(subdomain=subdomain).exclude(pk=blog.pk).count():
-                    if not is_protected(subdomain):
-                        blog.subdomain = subdomain
-                    else:
-                        error_messages.append(f"{value} is protected")
-                else:
-                    error_messages.append(f"{value} has already been taken")
-        elif name == "custom_domain":
-            if blog.user.settings.upgraded:
-                if Blog.objects.filter(domain=value).exclude(pk=blog.pk).count() == 0:
-                    try:
-                        validator = URLValidator()
-                        validator('http://' + value)
-                        blog.domain = value
-                    except ValidationError:
-                        error_messages.append(f'{value} is an invalid custom_domain')
-                        print("error")
-                else:
-                    error_messages.append(f"{value} is already registered with another blog")
-            else:
-                error_messages.append("Upgrade your blog to add a custom domain")
         elif name == 'favicon':
             if len(value) < 20:
                 blog.favicon = value
             else:
-                error_messages.append("Favicon is too long")
+                error_messages.append("Favicon is too long. Use an emoji.")
         elif name == 'meta_description':
             blog.meta_description = value
         elif name == 'meta_image':
             blog.meta_image = value
         elif name == 'lang':
             blog.lang = value
-        elif name == 'custom_meta_tag':
-            pattern = r'<meta\s+(?:[^>]*(?!\b(?:javascript|scripts|url)\b)[^>]*)*>'
-            if re.search(pattern, value, re.IGNORECASE):
-                blog.meta_tag = value
-            else:
-                error_messages.append("Invalid custom_meta_tag")
         elif name == 'date_format':
             blog.date_format = value
         else:
@@ -163,8 +124,6 @@ def parse_raw_homepage(blog, header_content, body_content):
         blog.title = "My blog"
     if not blog.subdomain:
         blog.slug = slugify(blog.user.username)
-    if not blog.favicon:
-        blog.favicon = "🐻"
 
     blog.content = body_content
     blog.last_modified = timezone.now()
@@ -212,7 +171,13 @@ def post(request, id, uid=None):
             for item in raw_header:
                 item = item.split(':', 1)
                 name = item[0].strip()
-                value = item[1].strip()
+
+                # Prevent index error
+                if len(item) == 2:
+                    value = item[1].strip()
+                else:
+                    value = ''
+
                 if str(value).lower() == 'true':
                     value = True
                 if str(value).lower() == 'false':
@@ -225,13 +190,20 @@ def post(request, id, uid=None):
                 elif name == 'alias':
                     post.alias = value
                 elif name == 'published_date':
-                    # Check if previously posted 'now'
-                    value = str(value).replace('/', '-')
-                    if not str(post.published_date).startswith(value):
+                    if not value:
+                        post.published_date = timezone.now()
+                    else:
+                        value = str(value).replace('/', '-')
                         try:
-                            post.published_date = timezone.datetime.fromisoformat(value)
-                        except ValueError:
-                            error_messages.append('Bad date format. Use YYYY-MM-DD')
+                            # Convert given date/time from local timezone to UTC
+                            naive_datetime = datetime.fromisoformat(value)
+                            user_timezone = request.COOKIES.get('timezone', 'UTC')
+                            user_tz = timezone.get_default_timezone() if user_timezone == 'UTC' else timezone.pytz.timezone(user_timezone)
+                            aware_datetime = timezone.make_aware(naive_datetime, user_tz)
+                            utc_datetime = aware_datetime.astimezone(timezone.utc)
+                            post.published_date = utc_datetime
+                        except Exception as e:
+                            error_messages.append('Bad date format. Use YYYY-MM-DD HH:MM')
                 elif name == 'tags':
                     tags = []
                     for tag in value.split(','):
@@ -279,7 +251,7 @@ def post(request, id, uid=None):
                 return post
             else:
                 post.save()
-
+                
                 if is_new:
                     # Self-upvote
                     upvote = Upvote(post=post, hash_id=salt_and_hash(request, 'year'))
@@ -288,14 +260,9 @@ def post(request, id, uid=None):
                     # Redirect to the new post detail view
                     return redirect('post_edit', id=blog.subdomain, uid=post.uid)
 
-        except ValidationError:
-            error_messages.append("One of the header options is invalid")
-        except IndexError:
-            error_messages.append("One of the header options is invalid")
-        except ValueError as error:
-            error_messages.append(error)
-        except DataError as error:
-            error_messages.append(error)
+        except Exception as error:
+            error_messages.append(f"Header attribute error - your post has not been saved. Error: {str(error)}")
+            post.content = body_content
 
     template_header = ""
     template_body = ""
@@ -447,6 +414,43 @@ def post_template(request, id):
 
 
 @login_required
+def custom_domain_edit(request, id):
+    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+
+    if not blog.user.settings.upgraded:
+        return redirect('upgrade')
+
+    error_messages = []
+
+    if request.method == "POST":
+        custom_domain = request.POST.get("custom-domain", "")
+
+        if Blog.objects.filter(domain__iexact=custom_domain).exclude(pk=blog.pk).count() == 0:
+            try:
+                validator = URLValidator()
+                validator('http://' + custom_domain)
+                blog.domain = custom_domain
+                blog.save()
+            except ValidationError:
+                error_messages.append(f'{custom_domain} is an invalid domain')
+                print("error")
+        elif not custom_domain:
+            blog.domain = ''
+            blog.save()
+        else:
+            error_messages.append(f"{custom_domain} is already registered with another blog")
+
+    # If records not set correctly
+    if blog.domain and not check_connection(blog):
+        error_messages.append(f"The DNS records for { blog.domain } have not been set.")
+
+    return render(request, 'studio/custom_domain_edit.html', {
+        'blog': blog,
+        'error_messages': error_messages
+    })
+
+
+@login_required
 def directive_edit(request, id):
     blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
@@ -462,8 +466,9 @@ def directive_edit(request, id):
         blog.save()
 
     return render(request, 'studio/directive_edit.html', {
-        'blog': blog,
+        'blog': blog
     })
+
 
 @login_required
 def advanced_settings(request, id):
@@ -479,7 +484,8 @@ def advanced_settings(request, id):
 
     return render(request, 'dashboard/advanced_settings.html', {
         'blog': blog,
-        'form': form})
+        'form': form
+    })
 
 
 @login_required

@@ -1,25 +1,15 @@
 
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.generic.edit import DeleteView
-from django.utils import timezone
-from django.db.models import Count
 from django.contrib.auth import get_user_model
-
+from django.utils.text import slugify
 
 from ipaddr import client_ip
 from unicodedata import lookup
-import json
-import os
-import boto3
-import time
 import djqscsv
-from botocore.config import Config
 
 from blogs.forms import NavForm, StyleForm
-from blogs.helpers import get_country
+from blogs.helpers import get_country, is_protected
 from blogs.models import Blog, Post, Stylesheet
 
 
@@ -49,26 +39,27 @@ def styles(request, id):
     blog = get_object_or_404(Blog, user=request.user, subdomain=id)
 
     if request.method == "POST":
-        form = StyleForm(
-            request.POST,
-            instance=blog
-        )
-        if form.is_valid():
-            blog_info = form.save(commit=False)
-            blog_info.save()
+        stylesheet = request.POST.get("stylesheet")
+        if stylesheet:
+            blog.custom_styles = Stylesheet.objects.get(identifier=stylesheet).css
+            blog.overwrite_styles = True
+            blog.save()
+            return redirect('styles', id=blog.subdomain)
+        else:
+            form = StyleForm(request.POST, instance=blog)
+            if form.is_valid():
+                form.save()
     else:
-        form = StyleForm(
-            instance=blog
-        )
+        form = StyleForm(instance=blog)
 
-    if request.GET.get("style", False):
-        style = request.GET.get("style", "default")
-        blog.custom_styles = Stylesheet.objects.get(identifier=style).css
-        blog.overwrite_styles = True
-        if request.GET.get("preview", False):
+    if request.GET.get("preview"):
+        stylesheet = request.GET.get("stylesheet")
+        if stylesheet:
+            blog.custom_styles = Stylesheet.objects.get(identifier=stylesheet).css
+            blog.overwrite_styles = True
             return render(request, 'home.html', {'blog': blog, 'preview': True})
-        blog.save()
-        return redirect('styles', id=blog.subdomain)
+
+    
 
     return render(request, 'dashboard/styles.html', {
         'blog': blog,
@@ -77,10 +68,12 @@ def styles(request, id):
     })
 
 
+
 @login_required
 def blog_delete(request, id):
-    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
-    blog.delete()
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+        blog.delete()
     return redirect('account')
 
 
@@ -93,7 +86,7 @@ def posts_edit(request, id):
     return render(request, 'dashboard/posts.html', {
         'pages': False,
         'blog': blog,
-        'posts': posts,
+        'posts': posts
     })
 
 @login_required
@@ -105,58 +98,20 @@ def pages_edit(request, id):
     return render(request, 'dashboard/posts.html', {
         'pages': True,
         'blog': blog,
-        'posts': posts,
+        'posts': posts
     })
 
 
 @login_required
 def post_delete(request, id, uid):
-    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
-    post = get_object_or_404(Post, blog=blog, uid=uid)
-    is_page = post.is_page
-    post.delete()
-    if is_page:
-        return redirect('pages_edit', id=blog.subdomain)
+    if request.method == "POST":
+        blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+        post = get_object_or_404(Post, blog=blog, uid=uid)
+        is_page = post.is_page
+        post.delete()
+        if is_page:
+            return redirect('pages_edit', id=blog.subdomain)
     return redirect('posts_edit', id=blog.subdomain)
-
-
-@csrf_exempt
-@login_required
-def upload_image(request, id):
-    blog = get_object_or_404(Blog, user=request.user, subdomain=id)
-
-    if request.method == "POST" and blog.user.settings.upgraded is True:
-        file_links = []
-        time_string = str(time.time()).split('.')[0]
-        count = 0
-
-        for file in request.FILES.getlist('file'):
-            extention = file.name.split('.')[-1]
-            if extention.lower().endswith(('png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'svg', 'webp')):
-
-                filepath = f'{blog.subdomain}-{time_string}-{count}.{extention}'
-                url = f'https://image.howieli.tech/{filepath}'
-                count = count + 1
-                file_links.append(url)
-
-                session = boto3.session.Session()
-                client = session.client(
-                    's3',
-                    endpoint_url='https://oss-cn-beijing-internal.aliyuncs.com',
-                    region_name='oss-cn-beijing',
-                    aws_access_key_id='LTAI5tBbDWtEcBLn3CdG3K32',
-                    aws_secret_access_key=os.getenv('SPACES_SECRET'),
-                    config=Config(s3={"addressing_style": "virtual", "signature_version": 's3v4'}))
-
-                response = client.put_object(
-                    Bucket='howieli-blog',
-                    Key=filepath,
-                    Body=file,
-                    ContentType=file.content_type,
-                    ACL='public-read',
-                )
-
-        return HttpResponse(json.dumps(sorted(file_links)), 200)
 
 
 @login_required
@@ -223,15 +178,29 @@ def opt_in_review(request, id):
 def settings(request, id):
     blog = get_object_or_404(Blog, user=request.user, subdomain=id)
     
+    error_messages = []
+    
+    if request.method == "POST":
+        subdomain = request.POST.get('subdomain')
+
+        if subdomain:
+            subdomain = slugify(subdomain.split('.')[0]).replace('_', '-')
+            if not Blog.objects.filter(subdomain=subdomain).exclude(pk=blog.pk).exists() and not is_protected(subdomain):
+                blog.subdomain = subdomain
+                blog.save()
+                return redirect('settings', id=blog.subdomain)
+            else:
+                error_messages.append(f'The subdomain "{subdomain}" is reserved')
+
+
+
     if request.GET.get("export", ""):
         return djqscsv.render_to_csv_response(blog.posts)
     
-    if request.GET.get("generate"):
-        blog.generate_auth_token()
-        return redirect('settings', subdomain=blog.subdomain)
 
     return render(request, "dashboard/settings.html", {
         "blog": blog,
+        "error_messages": error_messages
     })
 
 

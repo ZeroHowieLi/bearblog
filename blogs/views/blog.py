@@ -10,11 +10,8 @@ from django.utils.text import slugify
 from blogs.models import Blog, Post, Upvote
 from blogs.helpers import get_posts, salt_and_hash, unmark
 from blogs.tasks import daily_task
-from blogs.templatetags.custom_tags import format_date
 from blogs.views.analytics import render_analytics
 
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
 import tldextract
 
 
@@ -71,7 +68,7 @@ def home(request):
 
     all_posts = blog.posts.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
 
-    meta_description = blog.meta_description or unmark(blog.content)
+    meta_description = blog.meta_description or unmark(blog.content)[:157] + '...'
 
     return render(
         request,
@@ -98,7 +95,7 @@ def posts(request):
         all_posts = blog.posts.filter(publish=True, published_date__lte=timezone.now()).order_by('-published_date')
         blog_posts = get_posts(all_posts)
 
-    meta_description = blog.meta_description or unmark(blog.content)
+    meta_description = blog.meta_description or unmark(blog.content)[:157] + '...'
 
     return render(
         request,
@@ -108,7 +105,7 @@ def posts(request):
             'posts': blog_posts,
             'root': blog.useful_domain,
             'meta_description':  meta_description,
-            'query': tag,
+            'query': tag
         }
     )
 
@@ -118,10 +115,6 @@ def post(request, slug):
     blog = resolve_address(request)
     if not blog:
         return not_found(request)
-
-    # Check for a custom blogreel path and render the blog page
-    if slug == blog.blog_path:
-        return posts(request)
     
      # Check for a custom RSS feed path
     if slug == blog.rss_alias:
@@ -136,14 +129,17 @@ def post(request, slug):
         if post:
             return redirect('post', slug=post.slug)
         else:
+            # Check for a custom blogreel path and render the blog page
+            if slug == blog.blog_path or slug == 'blog':
+                return posts(request)
             return render(request, '404.html', {'blog': blog}, status=404)
-
+    
     # Check if upvoted
     hash_id = salt_and_hash(request, 'year')
     upvoted = post.upvote_set.filter(hash_id=hash_id).exists()
 
     root = blog.useful_domain
-    meta_description = post.meta_description or unmark(post.content)
+    meta_description = post.meta_description or unmark(post.content)[:157] + '...'
     full_path = f'{root}/{post.slug}/'
     canonical_url = full_path
     if post.canonical_url and post.canonical_url.startswith('https://'):
@@ -169,58 +165,6 @@ def post(request, slug):
     )
 
 
-def generate_meta_image(request, slug):
-    blog = resolve_address(request)
-    if not blog:
-        return not_found(request)
-
-    post = Post.objects.filter(blog=blog, slug__iexact=slug).first()
-
-    img = Image.new('RGB', (250, 180), color="#01242e")
-    d = ImageDraw.Draw(img)
-
-    font_title = ImageFont.load_default()
-    font_date = ImageFont.load_default()
-    font_description = ImageFont.load_default()
-
-    description = post.meta_description or post.content
-    if len(description) > 180:
-        description = description[0:180].strip() + '...'
-
-    # Insert line breaks after a space without breaking a word
-    words = description.split(' ')
-    lines = []
-    current_line = ''
-
-    for word in words:
-        if len(current_line) + len(word) <= 35:
-            current_line += ' ' + word if current_line else word
-        else:
-            lines.append(current_line.strip())
-            current_line = word
-
-    if current_line:
-        lines.append(current_line.strip())
-
-    description = '\n'.join(lines)
-
-    title = f"# {post.title}"
-    if len(title) > 35:
-        title = f"{title[0:35].strip()}..."
-
-    # Draw text
-    d.text((10, 10), title, fill=(255, 255, 255), font=font_title)
-    d.text((10, 40), f"*{format_date(post.published_date, blog.date_format, blog.lang)}*", fill=(255, 255, 255), font=font_date)
-    d.text((10, 60), description, fill=(255, 255, 255), font=font_description)
-    d.text((10, 160), blog.useful_domain, fill=(255, 255, 255), font=font_description)
-
-    img_io = BytesIO()
-    img.save(img_io, 'PNG', quality=100)
-    img_io.seek(0)
-
-    return FileResponse(img_io, filename='meta.png', content_type='image/png')
-
-
 @csrf_exempt
 def upvote(request, uid):
     hash_id = salt_and_hash(request, 'year')
@@ -228,11 +172,14 @@ def upvote(request, uid):
     if uid == request.POST.get("uid", "") and not request.POST.get("title", False):
         post = get_object_or_404(Post, uid=uid)
         print("Upvoting", post)
-        upvote, created = Upvote.objects.get_or_create(post=post, hash_id=hash_id)
-
-        if created:
+        try:
+            upvote, created = Upvote.objects.get_or_create(post=post, hash_id=hash_id)
+        
+            if created:
+                return HttpResponse(f'Upvoted {post.title}')
+            raise Http404('Duplicate upvote')
+        except Upvote.MultipleObjectsReturned:
             return HttpResponse(f'Upvoted {post.title}')
-        raise Http404('Duplicate upvote')
     raise Http404("Someone's doing something dodgy ʕ •`ᴥ•´ʔ")
 
 

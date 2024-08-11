@@ -10,20 +10,17 @@ from pygments.lexers import get_lexer_by_name
 from pygments.formatters import HtmlFormatter
 
 from html import escape
-from bs4 import BeautifulSoup
-from lxml.html.clean import Cleaner, defs
 from slugify import slugify
 
-import mistune
-import lxml
+from mistune import HTMLRenderer, create_markdown
+
 import latex2mathml.converter
 import re
 
+from blogs.helpers import unmark
 from blogs.models import Post
 
 register = template.Library()
-
-SAFE_ATTRS = list(defs.safe_attrs) + ['style', 'controls', 'allowfullscreen', 'autoplay', 'loop', 'open']
 
 HOST_WHITELIST = [
     'www.youtube.com',
@@ -43,7 +40,9 @@ HOST_WHITELIST = [
     'share.descript.com',
     'mrkennedy.ca',
     'open.spotify.com',
-    'umap.openstreetmap.fr'
+    'umap.openstreetmap.fr',
+    'music.163.com',
+    'sheevcharan.substack.com'
 ]
 
 TYPOGRAPHIC_REPLACEMENTS = [
@@ -64,60 +63,116 @@ def typographic_replacements(text):
         text = text.replace(old, new)
     return text
 
+def replace_inline_latex(text):
+    latex_exp_inline = re.compile(r'\$\$([^\n]*?)\$\$')
+    replaced_text = latex_exp_inline.sub(r'$\1$', text)
+
+    return replaced_text
+
+def fix_links(text):
+    parentheses_pattern = r'\[([^\]]+)\]\(((?:tab:)?https?://[^\)]+\([^\)]+\)[^\)]*)\)'
+
+    def escape_parentheses(match):
+        label = match.group(1)
+        url = match.group(2)
+        # Escape parentheses in the URL
+        escaped_url = url.replace('(', '%28').replace(')', '%29')
+        return f'[{label}]({escaped_url})'
+
+    fixed_text = re.sub(parentheses_pattern, escape_parentheses, text)
+    
+
+    return fixed_text
+
+class MyRenderer(HTMLRenderer):
+    def heading(self, text, level, **attrs):
+        return f'<h{level} id={slugify(text)}>{text}</h{level}>'
+    
+    def link(self, text, url, title=None):
+        if title:
+            title = title.replace("'", "&apos;").replace('"', "&quot;")
+        if 'tab:' in url:
+            url = url.replace('tab:', '')
+            if title:
+                return f"<a href='{url}' target='_blank' title='{title}'>{text}</a>"
+            return f"<a href='{url}' target='_blank'>{text}</a>"
+        
+        if title:
+            return f"<a href='{url}' title='{title}'>{text}</a>"
+        return f"<a href='{url}'>{text}</a>"
+
+
+    def text(self, text):
+        # Replace trailing backslashes with <br>
+        if re.match(r'^\s*\\\s*$', text):
+            text = '<br>'
+        return typographic_replacements(text)
+    
+    def inline_html(self, html):
+        return html
+    
+    def block_html(self, html):
+        return html
+    
+    def inline_math(self, text):
+        try:
+            return latex2mathml.converter.convert(text)
+        except Exception as e:
+            print("LaTeX rendering error")
+
+    
+    def block_math(self, text):
+        try:
+            return latex2mathml.converter.convert(text).replace('display="inline"', 'display="block"')
+        except Exception as e:
+            print("LaTeX rendering error")
+    
+    def block_code(self, code, info=None):
+        if info is None:
+            info = 'text'
+        try:
+            lexer = get_lexer_by_name(info)
+        except ValueError:
+            lexer = get_lexer_by_name('text')
+        
+        formatter = HtmlFormatter(style='friendly')
+        highlighted_code = highlight(code, lexer, formatter)
+        return highlighted_code
+    
+    
+markdown_renderer = create_markdown(
+    renderer=MyRenderer(),
+    plugins=['math', 'strikethrough', 'footnotes', 'table', 'superscript', 'subscript', 'mark', 'task_lists', 'abbr'],
+    escape=False)
 
 @register.filter
 def markdown(content, blog_or_post=False):
+    content = str(content)
+    if not content:
+        return ''
+
     post = None
-    blog= None
+    blog = None
     if blog_or_post:
         if isinstance(blog_or_post, Post):
             post = blog_or_post
             blog = post.blog
         else:
             blog = blog_or_post
-        
-    if not content:
+
+    # Removes old formatted inline LaTeX
+    content = replace_inline_latex(content)
+    # Find urls with parentheses and escape them
+    content = fix_links(content)
+
+    try:
+        processed_markup = markdown_renderer(content)
+    except TypeError:
         return ''
-
-    markup = mistune.html(content)
-
-    soup = BeautifulSoup(markup, 'html.parser')
-
-    heading_tags = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    for tag in heading_tags:
-        tag.attrs['id'] = slugify(tag.text)
-
-    for anchor in soup.find_all('a', href=True):
-        if 'tab:' in anchor.attrs['href']:
-            anchor.attrs['href'] = anchor.attrs['href'].replace('tab:', '')
-            anchor.attrs['target'] = '_blank'
-
-    for code_block in soup.find_all('code'):
-        if code_block.parent and code_block.parent.name == 'pre':
-            # Add pygments
-            language = code_block.get('class', [''])[0].split('-')[-1]
-            try:
-                lexer = get_lexer_by_name(language)
-            except ValueError:
-                lexer = get_lexer_by_name('text')
-
-            formatter = HtmlFormatter(style='friendly')
-            highlighted_code = highlight(code_block.get_text(), lexer, formatter)
-
-            new_code = BeautifulSoup(highlighted_code, 'html.parser')
-            code_block.parent.replace_with(new_code)
-
-    processed_markup = str(soup)
 
     # If not upgraded remove iframes and js
     if not blog or not blog.user.settings.upgraded:
         processed_markup = clean(processed_markup)
-
-    # Replace LaTeX between $$ with MathML
-    processed_markup = excluding_pre(processed_markup, render_latex)
-
-    # Add typographic replacements
-    processed_markup = excluding_pre(processed_markup, typographic_replacements)
 
     # Replace {{ xyz }} elements
     if blog:
@@ -146,29 +201,6 @@ def excluding_pre(markup, func, blog=None, post=None):
 
     for key in sorted(placeholders.keys(), reverse=True):
         markup = markup.replace(key, placeholders[key])
-
-    return markup
-
-
-def render_latex(markup):
-    latex_exp_block = re.compile(r'\$\$\n([\s\S]*?)\n\$\$')
-    latex_exp_inline = re.compile(r'\$\$([^\n]*?)\$\$')
-
-    def replace_with_mathml(match):
-        latex_content = match.group(1)
-        mathml_output = latex2mathml.converter.convert(latex_content)
-        return mathml_output
-
-    def replace_with_mathml_block(match):
-        latex_content = match.group(1)
-        mathml_output = latex2mathml.converter.convert(latex_content).replace('display="inline"', 'display="block"')
-        return mathml_output
-
-    try:
-        markup = latex_exp_block.sub(replace_with_mathml_block, markup)
-        markup = latex_exp_inline.sub(replace_with_mathml, markup)
-    except Exception as e:
-        print("LaTeX rendering error")
 
     return markup
 
@@ -214,7 +246,7 @@ def element_replacement(markup, blog, post=None):
             elif 'content:' in param[0] and not post or post.is_page:
                 content = param[5] == 'True'
 
-        filtered_posts = apply_filters(blog.posts.filter(publish=True, is_page=False), tag, limit, order)
+        filtered_posts = apply_filters(blog.posts.filter(publish=True, is_page=False, published_date__lte=timezone.now()), tag, limit, order)
         context = {'blog': blog, 'posts': filtered_posts, 'embed': True, 'show_description': description, 'show_content': content}
         return render_to_string('snippets/post_list.html', context)
 
@@ -257,29 +289,45 @@ def element_replacement(markup, blog, post=None):
 
 @register.filter
 def clean(markup):
-    defs.safe_attrs = SAFE_ATTRS
-    Cleaner.safe_attrs = defs.safe_attrs
-    cleaner = Cleaner(host_whitelist=HOST_WHITELIST, safe_attrs=SAFE_ATTRS)
-    try:
-        cleaned_markup = cleaner.clean_html(markup)
-    except lxml.etree.ParserError:
-        cleaned_markup = ""
+    cleaned_markup = re.sub(r'<script.*?>.*?</script>', '', markup, flags=re.DOTALL | re.IGNORECASE)
+    
+    cleaned_markup = re.sub(r'\son\w+="[^"]*"', '', cleaned_markup, flags=re.IGNORECASE)
+    cleaned_markup = re.sub(r'\son\w+=\'[^\']*\'', '', cleaned_markup, flags=re.IGNORECASE)
+    cleaned_markup = re.sub(r'\son\w+=\w+', '', cleaned_markup, flags=re.IGNORECASE)
+    cleaned_markup = re.sub(r'(<\w+\s+.*?)(href|src)\s*=\s*["\']?javascript:[^"\']*["\']?', r'\1', cleaned_markup, flags=re.IGNORECASE)
+    cleaned_markup = re.sub(r'<(object|embed|form|input|button).*?>', '', cleaned_markup, flags=re.IGNORECASE)
+    cleaned_markup = re.sub(r'</(object|embed|form|input|button)>', '', cleaned_markup, flags=re.IGNORECASE)
+    
+    def iframe_whitelisted(match):
+        src = match.group(2)
+        if any(host in src for host in HOST_WHITELIST):
+            return match.group(0)
+        return ''
+
+    cleaned_markup = re.sub(r'(<iframe.*?src=["\'])([^"\']*)(["\'].*?>.*?</iframe>)', iframe_whitelisted, cleaned_markup, flags=re.DOTALL | re.IGNORECASE)
 
     return cleaned_markup
 
 
 @register.filter
-def unmark(content):
-    markup = mistune.html(content)
-    return BeautifulSoup(markup, "lxml").text.strip()[:400] + '...'
+def remove_markup(content):
+    return unmark(content)[:400] + '...'
 
 
 @register.simple_tag
-def format_date(date, format_string, lang=None):
+def format_date(date, format_string, lang=None, tz='UTC'):
     if date is None:
         return ''
     if not format_string:
         format_string = 'd M, Y'
+
+    try:
+        timezone.activate(tz)
+        date = timezone.localtime(date)
+    except Exception as e:
+        pass
+
+    timezone.deactivate()
 
     if lang:
         current_lang = translation.get_language()

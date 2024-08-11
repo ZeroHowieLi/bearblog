@@ -5,6 +5,7 @@
 {% block seo %}
 <meta name="robots" content="nofollow">
 {% include 'snippets/seo_tags.html' with site_name='ʕ•ᴥ•ʔ Bear Blog' type="website" title='Discovery feed' url='https://bearblog.dev/discover' description='Discover articles and blogs on Bear' image="https://bear-images.sfo2.cdn.digitaloceanspaces.com/herman-1683556668-0.png" %}
+<link rel="alternate" type="application/atom+xml" href="/feed/{% if newest %}?newest=True{% endif %}">
 <link rel="alternate" type="application/rss+xml" href="feed/?type=rss{% if newest %}&newest=True{% endif %}">
 {% endblock %}
 
@@ -26,6 +27,19 @@
     {% endif %}
     <a href="/search/">Search</a>
 </nav>
+
+<p>
+    <details style="font-size: small; color: grey;">
+        <summary>Language ({% if lang %}{{ lang }}{% else %}No filter{% endif %})</summary>
+        <a href="{{ request.path }}" onclick="document.cookie='lang=; path=/;';">None</a>
+        {% for language in available_languages %}
+            {% if language %}
+            <a href="{{ request.path }}" onclick="document.cookie='lang={{ language }}; path=/;';">{{ language }}</a>
+            {% endif %}
+        {% endfor %}
+    </details>
+</p>
+
 {% if newest %}
 <p>
     <small><i><a target="_blank" href="https://docs.bearblog.dev/review-process/">Not seeing your post?</a></i></small>
@@ -54,31 +68,32 @@
                     <details>
                         <summary></summary>
                         <form method="POST" style="display:inline">
-                            <input hidden name="hide-post" value="{{ post.pk }}">
-                            <button onclick="event.preventDefault();if(confirm('Hide this post?')){event.target.parentElement.submit()}">Hide post</button>
-                        </form>
-                        <form method="POST" style="display:inline">
-                            <input hidden name="block-blog" value="{{ post.pk }}">
-                            <button onclick="event.preventDefault();if(confirm('Block this blog?')){event.target.parentElement.submit()}">Block blog</button>
-                        </form>
-                        <form method="POST" style="display:inline">
-                            <input hidden name="deprioritise-blog" value="{{ post.pk }}">
-                            <button onclick="event.preventDefault();if(confirm('Deprioritise this blog?')){event.target.parentElement.submit()}">Deprioritise blog</button>
-                        </form>
-                        <form method="POST" style="display:inline">
-                            <input hidden name="boost-post" value="{{ post.pk }}">
-                            <button onclick="event.preventDefault();if(confirm('Boost this post?')){event.target.parentElement.submit()}">Boost post</button>
-                        </form>
-                        <form method="POST" style="display:inline">
                             <input hidden name="pin-post" value="{{ post.pk }}">
                             <button onclick="event.preventDefault();if(confirm('Toggle pin this post?')){event.target.parentElement.submit()}">
                                 {% if post.pinned %}Un-{% endif %}Pin post
                             </button>
                         </form>
 
-                        <button onclick="window.open('https://news.ycombinator.com/submitlink?u={{ post.blog.useful_domain }}/{{ post.slug }}&t={{ post.title }}')">
-                            Post to Hacker News
-                        </button>
+                        <form method="POST" style="display:inline">
+                            <input hidden name="hide-post" value="{{ post.pk }}">
+                            <button onclick="event.preventDefault();if(confirm('Hide this post?')){event.target.parentElement.submit()}">Hide post</button>
+                        </form>
+                        <form method="POST" style="display:inline">
+                            <input hidden name="hide-blog" value="{{ post.pk }}">
+                            <button onclick="event.preventDefault();if(confirm('Hide this blog?')){event.target.parentElement.submit()}">Hide blog</button>
+                        </form>
+
+                        <form method="POST" style="display:inline">
+                            <input hidden name="block-blog" value="{{ post.pk }}">
+                            <button onclick="event.preventDefault();if(confirm('Block this blog?')){event.target.parentElement.submit()}">Block blog</button>
+                        </form>
+
+                        <form method="POST" style="display:inline">
+                            <span>Shadow votes:</span>
+                            <input hidden name="set-votes" value="{{ post.pk }}">
+                            <input type="number" name="shadow-votes" value="{{ post.shadow_votes }}" style="width:45px; padding: 0;">
+                            <button>Set</button>
+                        </form>
                     </details>
                 {% endif %}
             </small>
@@ -119,8 +134,7 @@ S = Seconds since Jan 1st, 2020
 D = Days modifier (currently at 14)
 
 --
-D values is used to specify that content D days old needs to have 10 times
-as many upvotes as something published now in order to outrank it.
+D values is used to modify the effect of time on the score. The higher D, the more time gravity influences post score.
         </pre>
     </small>
 </p>
@@ -129,6 +143,6 @@ as many upvotes as something published now in order to outrank it.
 
 {% block footer %}
 <p>
-    Start your own blog with <a href="/accounts/signup/">ʕ•ᴥ•ʔ Bear</a>
+    Start your own blog with <a href="/accounts/signup/"><span class="bear">ʕ•ᴥ•ʔ</span> Bear</a>
 </p>
 {% endblock %}

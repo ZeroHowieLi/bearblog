@@ -1,4 +1,3 @@
-import string
 from django.utils import timezone
 from django.contrib.sites.models import Site
 from django.core.mail import send_mail, get_connection, EmailMultiAlternatives
@@ -6,13 +5,13 @@ from django.contrib.gis.geoip2 import GeoIP2
 from django.http import Http404
 from django.conf import settings
 
+import re
+import string
 import os
 import random
 import threading
 import bleach
-from bs4 import BeautifulSoup
 from requests.exceptions import ConnectionError, ReadTimeout
-import mistune
 import requests
 import subprocess
 from datetime import timedelta
@@ -61,6 +60,27 @@ def is_protected(subdomain):
         'account',
         'router',
         'settings',
+        'support',
+        'eng',
+        'admin',
+        'dashboard',
+        'mail',
+        'static',
+        'blog',
+        'dev',
+        'beta',
+        'staging',
+        'secure',
+        'user',
+        'portal',
+        'help',
+        'contact',
+        'news',
+        'media',
+        'docs',
+        'auth',
+        'status',
+        'assets',
         'bearblog.dev',
         '*.bearblog.dev',
         'router.bearblog.dev',
@@ -129,9 +149,23 @@ def get_country(user_ip):
         return {}
 
 
-def unmark(markdown):
-    markup = mistune.html(markdown)
-    return BeautifulSoup(markup, "lxml").text.strip()[:157] + '...'
+def unmark(content):
+    content = re.sub(r'^\s{0,3}#{1,6}\s+.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s{0,3}[-*]{3,}\s*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s{0,3}>\s+.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'```.*?```', '', content, flags=re.DOTALL)
+    content = re.sub(r'`[^`]+`', '', content)
+    content = re.sub(r'!\[.*?\]\(.*?\)', '', content)
+    content = re.sub(r'\[.*?\]\(.*?\)', '', content)
+    content = re.sub(r'(\*\*|__)(.*?)\1', '', content)
+    content = re.sub(r'(\*|_)(.*?)\1', '', content)
+    content = re.sub(r'~~.*?~~', '', content)
+    content = re.sub(r'^\s{0,3}[-*+]\s+.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s{0,3}\d+\.\s+.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s*\|.*?\|\s*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s*[:-]{3,}\s*$', '', content, flags=re.MULTILINE)
+
+    return content
 
 
 def clean_text(text):
@@ -189,18 +223,6 @@ def send_async_mail(subject, html_message, from_email, recipient_list):
         print('Sent email to ', recipient_list)
         EmailThread(subject, html_message, from_email, recipient_list).start()
 
-
-def random_error_message():
-    errors = [
-        'Whoops. Looks like our servers are bearly functioning. Try again later.',
-        'Ensure content contains necessary parameters.',
-        'Something went wrong. Please try restarting your computer.',
-        'Your password needs a special character, a number, and a capital letter.',
-        'Ensure content is the correct length.',
-        'Bear with us as we fix our software.'
-    ]
-
-    return random.choice(errors)
 
 def random_post_link():
     count = Post.objects.filter(

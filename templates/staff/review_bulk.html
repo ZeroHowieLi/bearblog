@@ -1,12 +1,9 @@
 {% extends 'base.html' %}
 {% load custom_tags %}
 
-{% block favicon %}🚮{% endblock %}
-
 {% block title %}Review flow{% endblock %}
 
-
-{% block heading %}Review flow{% endblock %}
+{% block heading %}Review flow  ʕง•ᴥ•ʔง{% endblock %}
 
 {% block seo %}
 <meta name="robots" content="noindex">
@@ -39,6 +36,7 @@ body {
 {% for blog in blogs %}
 <div id="blog-{{ blog.pk }}">
     <h3>{{ blog.title }}</h3>
+    <h4>Dodginess score: {{ blog.dodginess_score }}</h4>
     <a href="{{ blog.useful_domain }}" target="_blank">{{ blog.useful_domain }}</a>
     <br>
     <a href="mailto:{{ blog.user.email }}">{{ blog.user.email }}</a>
@@ -50,11 +48,11 @@ body {
         Last posted {{ blog.last_posted | timesince }} ago
     </b></p>
 
-    <nav>{{ blog.nav | markdown:blog | safe }}</nav>
-    {{ blog.content | markdown:blog | safe }}
-
-
-    <ul style="padding-bottom: 30px; max-height: 500px; overflow: auto; border: 1px dashed">
+    <br><br>
+    <ul style="padding-bottom: 30px; max-height: 400px; overflow: auto; border: 1px dashed">
+        <li>
+            {{ blog.content | linebreaksbr }}
+        </li>
         {% for post in blog.posts.all %}
         <li>
             <i>
@@ -64,11 +62,13 @@ body {
             </i>
             <h3><a href="{{ root }}/{{ post.slug }}/" target="_blank">{{ post.title }}</a></h3>
             <p>
-                {{ post.content | markdown:post | safe }}
+                {{ post.content | linebreaksbr }}
             </p>
         </li>
         {% endfor %}
     </ul>
+
+    <iframe src="{{ blog.bear_domain }}" loading="lazy" width="100%" height="400"></iframe>
 
     {% if blog.reviewer_note %}
     <p style="color: darkgreen">
@@ -87,7 +87,8 @@ Herman
         </textarea>
     </details>
     <br>
-    <input type="checkbox" class="deprioritise" name="deprioritise"> deprioritise
+    <input type="checkbox" class="hide" name="hide"> hide
+    <br>
     <br>
     <div class="controls">
         <button onclick="approveBlogWithEmail({{ blog.pk }})">Approve and email</button>
@@ -105,99 +106,141 @@ Herman
 
 {% block footer %}
 <script>
+    function sendPostRequest(url, data) {
+        const csrfToken = '{{ csrf_token }}';
+
+        const formData = new FormData();
+        formData.append('csrfmiddlewaretoken', csrfToken);
+
+        for (const key in data) {
+            if (data.hasOwnProperty(key)) {
+                formData.append(key, data[key]);
+            }
+        }
+
+        fetch(url, {
+            method: 'POST',
+            body: formData,
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(result => {
+            console.log('Success:', result);
+        })
+        .catch(error => {
+            console.error('Error:', error);
+        });
+    }
+
+    function approveBlogWithEmail(pk) {
+        const message = document.querySelector(`#blog-${pk} .message`).value;
+        const hide = document.querySelector(`#blog-${pk} .hide`).checked ? 'on' : '';
+
+        sendPostRequest(`/staff/review/approve/${pk}`, { message: message, hide: hide });
+
+        document.querySelector(`#blog-${pk}`).style.background = "lightgreen";
+    }
+
+    function approveBlog(pk) {
+        const hide = document.querySelector(`#blog-${pk} .hide`).checked ? 'on' : '';
+
+        sendPostRequest(`/staff/review/approve/${pk}`, { hide: hide });
+
+        document.querySelector(`#blog-${pk}`).style.background = "lightgreen";
+    }
+
+    function ignoreBlog(pk) {
+        document.querySelector(`#blog-${pk}`).style.background = "lightyellow";
+        sendPostRequest(`/staff/review/ignore/${pk}`, {});
+    }
+
+    function blockBlog(pk) {
+        document.querySelector(`#blog-${pk}`).style.background = "orange";
+        sendPostRequest(`/staff/review/block/${pk}`, {});
+    }
+
+    function deleteBlog(pk) {
+        if (confirm('Delete this blog?')) {
+            document.querySelector(`#blog-${pk}`).style.background = "grey";
+            sendPostRequest(`/staff/review/delete/${pk}`, {});
+        }
+    }
+
     function highlightKeywords(keywords) {
         const regex = new RegExp(keywords.join('|'), 'gi');
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         
         const nodeList = [];
         while (walker.nextNode()) {
-          nodeList.push(walker.currentNode);
+            nodeList.push(walker.currentNode);
         }
         
         for (const node of nodeList) {
-          const text = node.textContent;
-          const matches = text.match(regex);
-          
-          if (matches) {
-            const fragment = document.createDocumentFragment();
-            let lastIndex = 0;
+            const text = node.textContent;
+            const matches = text.match(regex);
             
-            for (const match of matches) {
-              const index = text.toLowerCase().indexOf(match.toLowerCase(), lastIndex);
-              fragment.appendChild(document.createTextNode(text.slice(lastIndex, index)));
-              const mark = document.createElement('mark');
-              mark.textContent = text.slice(index, index + match.length);
-              fragment.appendChild(mark);
-              lastIndex = index + match.length;
+            if (matches) {
+                const fragment = document.createDocumentFragment();
+                let lastIndex = 0;
+                
+                for (const match of matches) {
+                    const index = text.toLowerCase().indexOf(match.toLowerCase(), lastIndex);
+                    fragment.appendChild(document.createTextNode(text.slice(lastIndex, index)));
+                    const mark = document.createElement('mark');
+                    mark.textContent = text.slice(index, index + match.length);
+                    fragment.appendChild(mark);
+                    lastIndex = index + match.length;
+                }
+                
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+                node.parentNode.replaceChild(fragment, node);
             }
-            
-            fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-            node.parentNode.replaceChild(fragment, node);
-          }
         }
     }
+
+    function highlightURLS() {
+        const regex =  /(https?:\/\/[^\s"')]+)/gi;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         
+        const nodeList = [];
+        while (walker.nextNode()) {
+            nodeList.push(walker.currentNode);
+        }
+        
+        for (const node of nodeList) {
+            const text = node.textContent;
+            const matches = text.match(regex);
+            
+            if (matches) {
+                const fragment = document.createDocumentFragment();
+                let lastIndex = 0;
+                
+                for (const match of matches) {
+                    if (match.includes('lh.co','bearblog.dev','imgur','youtu.be','neocities')) {
+                        break;
+                    }
+                    const index = text.toLowerCase().indexOf(match.toLowerCase(), lastIndex);
+                    fragment.appendChild(document.createTextNode(text.slice(lastIndex, index)));
+                    const mark = document.createElement('mark');
+                    mark.style.backgroundColor = 'lightgreen';
+                    mark.textContent = text.slice(index, index + match.length);
+                    fragment.appendChild(mark);
+                    lastIndex = index + match.length;
+                }
+                
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+                node.parentNode.replaceChild(fragment, node);
+            }
+        }
+    }
+
+    highlightURLS();
     const keywords = {{ highlight_terms | safe }};
     highlightKeywords(keywords);
-
-    function approveBlogWithEmail(pk) {
-        const message = document.querySelector(`#blog-${pk} .message`).value;
-        const deprioritise = document.querySelector(`#blog-${pk} .deprioritise`).checked;
-        
-        sendApproveBlog(pk, message, deprioritise)
-
-        document.querySelector(`#blog-${pk}`).style.background = "lightgreen";
-    }
-    
-    function approveBlog(pk) {
-        const deprioritise = document.querySelector(`#blog-${pk} .deprioritise`).checked;
-        
-        sendApproveBlog(pk, false, deprioritise)
-
-        document.querySelector(`#blog-${pk}`).style.background = "lightgreen";
-    }
-
-    function sendApproveBlog(pk, message=false, deprioritise=false) {
-        let queryParams = [];
-        if (message) queryParams.push(`message=${message}`);
-        if (deprioritise) queryParams.push(`deprioritise=${deprioritise}`);
-        const queryString = queryParams.join('&');
-
-        const url = `/staff/review/approve/${pk}?${queryString}`;
-
-        fetch(url, {
-            method: 'GET'
-        })
-        .then(response => console.log(response))
-        .catch(error => console.error('Error:', error));
-    }
-    
-    function ignoreBlog(pk) {
-        document.querySelector(`#blog-${pk}`).style.background="lightyellow"
-        fetch(`/staff/review/ignore/${pk}`, {
-            method: 'GET'
-        })
-        .then(data => console.log(data))
-        .catch(error => console.error('Error:', error));
-    }
-    function blockBlog(pk) {
-        document.querySelector(`#blog-${pk}`).style.background="orange"
-        fetch(`/staff/review/block/${pk}`, {
-            method: 'GET'
-        })
-        .then(data => console.log(data))
-        .catch(error => console.error('Error:', error));
-    }
-    function deleteBlog(pk) {
-        if (confirm('Delete this blog?')) {
-            document.querySelector(`#blog-${pk}`).style.background="grey"
-            fetch(`/staff/review/delete/${pk}`, {
-                method: 'GET'
-            })
-            .then(data => console.log(data))
-            .catch(error => console.error('Error:', error));
-        }
-    }
 </script>
 
 {% endblock %}

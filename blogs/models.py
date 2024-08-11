@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.contrib.sites.models import Site
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.core.cache import cache
 
 from allauth.account.models import EmailAddress
 
@@ -44,7 +45,7 @@ class Blog(models.Model):
     domain = models.CharField(max_length=128, blank=True, null=True)
     auth_token = models.CharField(max_length=128, blank=True)
 
-    nav = models.CharField(max_length=1000, default="[Home](/) [Blog](/blog/)", blank=True)
+    nav = models.TextField(default="[Home](/) [Blog](/blog/)", blank=True)
     content = models.TextField(default="Hello World!", blank=True)
     meta_description = models.CharField(max_length=200, blank=True)
     meta_image = models.CharField(max_length=200, blank=True)
@@ -54,18 +55,19 @@ class Blog(models.Model):
     header_directive = models.TextField(blank=True)
     footer_directive = models.TextField(blank=True)
 
+    dodginess_score = models.FloatField(default=0)
     reviewed = models.BooleanField(default=False)
     ignored_date = models.DateTimeField(blank=True, null=True)
     to_review = models.BooleanField(default=False)
     reviewer_note = models.TextField(blank=True)
-    deprioritise = models.BooleanField(default=False)
+    hidden = models.BooleanField(default=False)
 
     custom_styles = models.TextField(blank=True)
     overwrite_styles = models.BooleanField(
         default=False,
         choices=((True, 'Overwrite default styles'), (False, 'Extend default styles')),
         verbose_name='')
-    favicon = models.CharField(max_length=10, default="🐼")
+    favicon = models.CharField(max_length=100, default="🐼", blank=True)
 
     date_format = models.CharField(max_length=32, blank=True)
 
@@ -76,15 +78,10 @@ class Blog(models.Model):
     post_template = models.TextField(blank=True)
     robots_txt = models.TextField(blank=True)
     rss_alias = models.CharField(max_length=100, blank=True)
-
+    
     @property
     def older_than_one_day(self):
         return (timezone.now() - self.created_date).days > 1
-    
-    @property
-    def created_after_mandatory_opt_in(self):
-        mandatory_opt_in_date = timezone.make_aware(timezone.datetime(2024, 2, 22))
-        return self.created_date > mandatory_opt_in_date
 
     @property
     def user_email_verified(self):
@@ -139,13 +136,31 @@ class Blog(models.Model):
         self.auth_token = ''.join(random.choice(allowed_chars) for _ in range(30))
         self.save()
 
+    def determine_dodginess(self):
+        persistent_store = PersistentStore.load()
+        dodgy_term_count = 0
+        all_content = f"{self.title} {self.content}"
+        
+        post = self.posts.first()
+        if post:
+            all_content += f"{post.title} {post.content}"
+
+        for term in persistent_store.highlight_terms:
+            dodgy_term_count += all_content.lower().count(term.lower())
+
+        self.dodginess_score = dodgy_term_count
+
     def save(self, *args, **kwargs):
-    #     # Create auth_token
-    #     if not self.auth_token:
-    #         allowed_chars = string.ascii_letters.replace('O', '').replace('l', '')
-    #         self.auth_token = ''.join(random.choice(allowed_chars) for _ in range(20))
         if self.user.settings.upgraded:
             self.reviewed = True
+        
+        if not self.reviewed:
+            self.determine_dodginess()
+        
+        # Invalidate feed cache
+        CACHE_KEY = f'{self.subdomain}_all_posts'
+        cache.delete(CACHE_KEY)
+
         super(Blog, self).save(*args, **kwargs)
 
     def __str__(self):
@@ -171,7 +186,9 @@ class Post(models.Model):
     lang = models.CharField(max_length=10, blank=True)
     class_name = models.CharField(max_length=200, blank=True)
 
+    first_published_at = models.DateTimeField(blank=True, null=True)
     upvotes = models.IntegerField(default=0)
+    shadow_votes = models.IntegerField(default=0)
     score = models.FloatField(default=0)
     hidden = models.BooleanField(default=False)
     pinned = models.BooleanField(default=False)
@@ -190,18 +207,24 @@ class Post(models.Model):
 
     def update_score(self):
         self.upvotes = self.upvote_set.count()
+        upvotes = self.upvotes
 
-        if self.upvotes > 1:
-            log_of_upvotes = log(self.upvotes, 10)
+        if upvotes > 1: 
+            # Cap upvotes at 40 so they don't stick to the top forever
+            if upvotes > 40:
+                upvotes = 40
 
-            seconds = self.published_date.timestamp()
+            upvotes += self.shadow_votes
+
+            log_of_upvotes = log(upvotes, 10)
+
+            posted_at = self.first_published_at or self.published_date
+
+            seconds = posted_at.timestamp()
             if seconds > 0:
-                if self.blog.deprioritise:
-                    score = 0
-                else:
-                    score = (log_of_upvotes) + ((seconds - 1577811600) / (14 * 86400))
+                gravity = 14
+                score = (log_of_upvotes) + ((seconds - 1577811600) / (gravity * 86400))
                 self.score = score
-        self.save()
     
     def save(self, *args, **kwargs):
         self.slug = self.slug.lower()
@@ -212,6 +235,16 @@ class Post(models.Model):
         if not self.uid:
             allowed_chars = string.ascii_letters.replace('O', '').replace('l', '')
             self.uid = ''.join(random.choice(allowed_chars) for _ in range(20))
+
+        # Set first_published_at for score calculation
+        if self.publish and self.first_published_at is None:
+            self.first_published_at = self.published_date or timezone.now()
+
+        # Update the score for the discover feed
+        self.update_score()
+
+        # Save blog to trigger determine_dodginess
+        self.blog.save()
 
         super(Post, self).save(*args, **kwargs)
 
@@ -228,8 +261,8 @@ class Upvote(models.Model):
         # Save the Upvote instance
         super(Upvote, self).save(*args, **kwargs)
         
-        # Now that the Upvote is saved and counted, update the post score
-        self.post.update_score()
+        # Update the post score on post save
+        self.post.save()
 
     def __str__(self):
         return f"{self.created_date.strftime('%d %b %Y, %X')} - {self.hash_id} - {self.post}"
@@ -265,6 +298,7 @@ class RssSubscriber(models.Model):
     def __str__(self):
         return f"{self.access_date.strftime('%d %b %Y, %X')} - {self.blog.title} - {self.hash_id}"
 
+
 class Stylesheet(models.Model):
     title = models.CharField(max_length=100)
     identifier = models.SlugField(max_length=100, unique=True)
@@ -275,6 +309,18 @@ class Stylesheet(models.Model):
     def __str__(self):
         return self.title
 
+
+class Media(models.Model):
+    blog = models.ForeignKey(Blog, on_delete=models.CASCADE, related_name='media')
+    url = models.URLField(max_length=500)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.blog.subdomain} - {self.url} - {self.created_at}"
+    
 
 # Singleton model to store Bear specific settings
 class PersistentStore(models.Model):

@@ -59,12 +59,15 @@ ALLOWED_HOSTS = ['*']
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
+X_FRAME_OPTIONS = 'ALLOWALL'
+
 INTERNAL_IPS = ['127.0.0.1']
 
 # Application definition
 SITE_ID = 1
 
 INSTALLED_APPS = [
+    'judoscale.django',
     'django.contrib.admin',
     'django.contrib.sites',
     'django.contrib.auth',
@@ -114,6 +117,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'django.template.context_processors.request',
+                'blogs.context_processors.tz'
             ],
         },
     },
