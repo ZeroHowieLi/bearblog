@@ -19,6 +19,49 @@ from blogs.models import Blog, Media
 
 file_types = ['png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'svg', 'webp', 'avif', 'heic', 'ico', 'mp4']
 
+# @csrf_exempt
+# @login_required
+# def upload_image(request, id):
+#     blog = get_object_or_404(Blog, user=request.user, subdomain=id)
+
+#     if request.method == "POST" and blog.user.settings.upgraded is True:
+#         file_links = []
+#         time_string = str(time.time()).split('.')[0]
+
+#         for file in request.FILES.getlist('file'):
+#             extension = file.name.split('.')[-1].lower()
+#             if extension.endswith(tuple(file_types)):
+                
+#                 if file.size > 10 * 1024 * 1024:  # 10MB in bytes
+#                     raise ValidationError(f'File {file.name} exceeds 10MB limit')
+                
+#                 filepath = f'{blog.subdomain}-{time_string}.{extension}'
+#                 url = f'https://bear-images.sfo2.cdn.digitaloceanspaces.com/{filepath}'
+#                 file_links.append(url)
+
+#                 session = boto3.session.Session()
+#                 client = session.client(
+#                     's3',
+#                     endpoint_url='https://sfo2.digitaloceanspaces.com',
+#                     region_name='sfo2',
+#                     aws_access_key_id=os.getenv('SPACES_ACCESS_KEY_ID'),
+#                     aws_secret_access_key=os.getenv('SPACES_SECRET'))
+
+#                 response = client.put_object(
+#                     Bucket='bear-images',
+#                     Key=filepath,
+#                     Body=file,
+#                     ContentType=file.content_type,
+#                     ACL='public-read',
+#                 )
+
+#                 # Create Media object
+#                 Media.objects.create(blog=blog, url=url)
+#             else:
+#                 raise ValidationError(f'Format not supported: {extension}')
+
+#         return HttpResponse(json.dumps(sorted(file_links)), 200)
+    
 @csrf_exempt
 @login_required
 def upload_image(request, id):
@@ -27,38 +70,33 @@ def upload_image(request, id):
     if request.method == "POST" and blog.user.settings.upgraded is True:
         file_links = []
         time_string = str(time.time()).split('.')[0]
+        count = 0
 
         for file in request.FILES.getlist('file'):
-            extension = file.name.split('.')[-1].lower()
-            if extension.endswith(tuple(file_types)):
-                
-                if file.size > 10 * 1024 * 1024:  # 10MB in bytes
-                    raise ValidationError(f'File {file.name} exceeds 10MB limit')
-                
-                filepath = f'{blog.subdomain}-{time_string}.{extension}'
-                url = f'https://bear-images.sfo2.cdn.digitaloceanspaces.com/{filepath}'
+            extention = file.name.split('.')[-1]
+            if extention.lower().endswith(('png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'svg', 'webp')):
+
+                filepath = f'{blog.subdomain}-{time_string}-{count}.{extention}'
+                url = f'https://image.howieli.tech/{filepath}'
+                count = count + 1
                 file_links.append(url)
 
                 session = boto3.session.Session()
                 client = session.client(
                     's3',
-                    endpoint_url='https://sfo2.digitaloceanspaces.com',
-                    region_name='sfo2',
-                    aws_access_key_id=os.getenv('SPACES_ACCESS_KEY_ID'),
-                    aws_secret_access_key=os.getenv('SPACES_SECRET'))
+                    endpoint_url='https://oss-cn-beijing-internal.aliyuncs.com',
+                    region_name='oss-cn-beijing',
+                    aws_access_key_id='LTAI5tBbDWtEcBLn3CdG3K32',
+                    aws_secret_access_key=os.getenv('SPACES_SECRET'),
+                    config=Config(s3={"addressing_style": "virtual", "signature_version": 's3v4'}))
 
                 response = client.put_object(
-                    Bucket='bear-images',
+                    Bucket='howieli-blog',
                     Key=filepath,
                     Body=file,
                     ContentType=file.content_type,
                     ACL='public-read',
                 )
-
-                # Create Media object
-                Media.objects.create(blog=blog, url=url)
-            else:
-                raise ValidationError(f'Format not supported: {extension}')
 
         return HttpResponse(json.dumps(sorted(file_links)), 200)
 
